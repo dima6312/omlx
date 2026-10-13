@@ -9,6 +9,18 @@ import mlx.nn as nn
 import pytest
 from mlx_vlm.speculative.drafters.dflash2.config import DFlash2Config
 from mlx_vlm.speculative.drafters.dflash2.dflash2 import DFlash2DraftModel
+from mlx_vlm.speculative.drafters.laguna_dflash import (
+    LagunaDFlashDraftModel,
+)
+from mlx_vlm.speculative.drafters.laguna_dflash import (
+    ModelConfig as LagunaDFlashConfig,
+)
+from mlx_vlm.speculative.drafters.muse_glimmer_assistant import (
+    ModelConfig as MuseAssistantConfig,
+)
+from mlx_vlm.speculative.drafters.muse_glimmer_assistant import (
+    MuseGlimmerAssistantDraftModel,
+)
 
 from omlx.scheduler import Scheduler
 from omlx.speculative import dflash_drafter as dd
@@ -85,6 +97,96 @@ def _tiny_drafter(seed=0):
     return dd.DFlashDrafter(model, block_size=BLOCK, source_path="tiny")
 
 
+def _tiny_laguna_drafter(seed=0):
+    """Fused QKV, per-head output gate, causal block, per-capture norms."""
+    config = LagunaDFlashConfig.from_dict(
+        {
+            "model_type": "laguna",
+            "hidden_size": HIDDEN,
+            "intermediate_size": 48,
+            "num_hidden_layers": len(TARGET_LAYER_IDS),
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 8,
+            "vocab_size": VOCAB,
+            "draft_vocab_size": VOCAB,
+            "max_position_embeddings": 4096,
+            "rope_theta": 10000.0,
+            "layer_types": ["sliding_attention"] * len(TARGET_LAYER_IDS),
+            "sliding_window": WINDOW,
+            "gating": "per-head",
+            "eagle_aux_hidden_state_layer_ids": [i + 1 for i in TARGET_LAYER_IDS],
+            "dflash_config": {
+                "block_size": BLOCK,
+                "mask_token_id": VOCAB - 1,
+                "target_layer_ids": TARGET_LAYER_IDS,
+                "num_target_layers": TARGET_LAYERS,
+                "causal": True,
+            },
+        }
+    )
+    mx.random.seed(seed)
+    model = LagunaDFlashDraftModel(config)
+    params = {
+        key: mx.random.normal(value.shape) * 0.2
+        for key, value in nn.utils.tree_flatten(model.parameters())
+    }
+    model.load_weights(list(params.items()), strict=False)
+    target = _tiny_target()
+    target.language_model.config = {
+        "num_hidden_layers": TARGET_LAYERS,
+        "vocab_size": VOCAB,
+    }
+    model.bind(target)
+    mx.eval(model.parameters())
+    return dd.DFlashDrafter(model, block_size=BLOCK, source_path="tiny")
+
+
+def _tiny_muse_drafter(seed=0):
+    """Encoder-held context projection, plain q/k/v projections."""
+    config = MuseAssistantConfig.from_dict(
+        {
+            "hidden_size": HIDDEN,
+            "intermediate_size": 48,
+            "num_hidden_layers": len(TARGET_LAYER_IDS),
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 8,
+            "max_position_embeddings": 4096,
+            "sliding_window": WINDOW,
+            "block_size": BLOCK,
+            "mask_token_id": VOCAB - 1,
+            "target_layer_ids": TARGET_LAYER_IDS,
+            "num_target_layers": TARGET_LAYERS,
+            "vocab_size": VOCAB,
+        }
+    )
+    mx.random.seed(seed)
+    model = MuseGlimmerAssistantDraftModel(config)
+    params = {
+        key: mx.random.normal(value.shape) * 0.2
+        for key, value in nn.utils.tree_flatten(model.parameters())
+    }
+    model.load_weights(list(params.items()), strict=False)
+    target = _tiny_target()
+    target.language_model.config = SimpleNamespace(
+        model_type="muse_glimmer_text",
+        hidden_size=HIDDEN,
+        num_hidden_layers=TARGET_LAYERS,
+        vocab_size=VOCAB,
+    )
+    model.bind(target)
+    mx.eval(model.parameters())
+    return dd.DFlashDrafter(model, block_size=BLOCK, source_path="tiny")
+
+
+DRAFTER_FAMILIES = pytest.mark.parametrize(
+    "make_drafter",
+    [_tiny_drafter, _tiny_laguna_drafter, _tiny_muse_drafter],
+    ids=["dflash2", "laguna", "muse"],
+)
+
+
 def _captured(n, seed):
     mx.random.seed(seed)
     return [mx.random.normal((1, n, HIDDEN)) for _ in TARGET_LAYER_IDS]
@@ -116,7 +218,8 @@ def _run_cycles(drafter, plan, cycle_offset=0):
     return outputs
 
 
-def test_batched_forward_matches_rows_drafted_alone():
+@DRAFTER_FAMILIES
+def test_batched_forward_matches_rows_drafted_alone(make_drafter):
     """Padding, masks, vector RoPE offsets and ring writes must not leak across rows."""
     plan = [
         {0: (5, 3), 1: (1, 9)},
@@ -127,7 +230,7 @@ def test_batched_forward_matches_rows_drafted_alone():
     ]
     expected = [{} for _ in plan]
     for uid in (0, 1, 2):
-        alone = _tiny_drafter()
+        alone = make_drafter()
         solo_plan = [{uid: rows[uid]} if uid in rows else {} for rows in plan]
         for cycle, rows in enumerate(solo_plan):
             if rows:
@@ -135,7 +238,7 @@ def test_batched_forward_matches_rows_drafted_alone():
                     _run_cycles(alone, [rows], cycle_offset=cycle)[0]
                 )
 
-    batched = _tiny_drafter()
+    batched = make_drafter()
     got = _run_cycles(batched, plan)
     assert got == expected
     # The ring saw every context token, including the ones that fell out of
@@ -345,10 +448,21 @@ def test_sampled_rows_get_sparse_candidate_distributions():
             assert probs[tokens[0, position]].item() > 0
 
 
-def test_short_context_matches_reference_draft_block():
+@pytest.mark.parametrize(
+    "make_drafter, longest",
+    [
+        (_tiny_drafter, WINDOW - 1),
+        (_tiny_laguna_drafter, WINDOW - 1),
+        # Muse's reference windows each query; keep the context inside the
+        # window of every block query.
+        (_tiny_muse_drafter, WINDOW - BLOCK + 1),
+    ],
+    ids=["dflash2", "laguna", "muse"],
+)
+def test_short_context_matches_reference_draft_block(make_drafter, longest):
     """Ring slots not yet written must stay out of attention."""
-    for length in (1, 3, WINDOW - 1):
-        drafter = _tiny_drafter()
+    for length in (1, 3, longest):
+        drafter = make_drafter()
         context = mx.concatenate(_captured(length, seed=60 + length), axis=-1)
         anchor = mx.array([7], dtype=mx.int32)
         cache = drafter.model.make_cache()

@@ -20,7 +20,9 @@ from ..model_settings import (
     ane_prefill_fraction,
     validate_ane_prefill,
 )
+from ..patches.mlx_lm_mtp import drafter_target
 from ..reasoning_effort import apply_chat_template_with_reasoning_effort_fallback
+from ..speculative.dflash_drafter import attach_drafter
 from ..utils.tokenizer import get_tokenizer_config
 from .base import (
     BaseEngine,
@@ -98,6 +100,7 @@ class BatchedEngine(BaseEngine):
         self._tokenizer = None
         self._engine = None
         self._loaded = False
+        self._dflash_drafter: Any | None = None
         self._grammar_compiler = None
         self._grammar_compiler_init_attempted = False
 
@@ -808,6 +811,35 @@ class BatchedEngine(BaseEngine):
         self._loaded = True
         logger.info(f"BatchedEngine loaded: {self._model_name}")
 
+    def _dflash_host(self) -> Any:
+        return getattr(self._model, "language_model", self._model)
+
+    def prepare_dflash_target(self) -> Any:
+        """Return the model a DFlash drafter binds to, ready for captures.
+
+        Plain-attention models without speculative rollback (Qwen3, Laguna)
+        gain layer captures and rollback here, before the drafter binds.
+        """
+        if not hasattr(self._dflash_host(), "rollback_speculative_cache"):
+            drafter_target.apply(self._dflash_host())
+        return self._model
+
+    def set_dflash_drafter(self, drafter: Any) -> None:
+        """Attach a DFlash block drafter to the Lightning MTP decode path."""
+        attach_drafter(self._dflash_host(), drafter)
+        self._dflash_drafter = drafter
+        logger.info(
+            "DFlash drafter attached to engine: %s (kind=%s, block=%d, layers=%s)",
+            self._model_name,
+            drafter.kind,
+            drafter.block_size,
+            drafter.target_layer_ids,
+        )
+
+    @property
+    def dflash_drafter(self) -> Any | None:
+        return self._dflash_drafter
+
     async def stop(self) -> None:
         """Stop the engine and cleanup resources."""
         cancelled = False
@@ -848,6 +880,7 @@ class BatchedEngine(BaseEngine):
                 "_model",
                 "_tokenizer",
                 "_grammar_compiler",
+                "_dflash_drafter",
             ),
             false_attrs=("_grammar_compiler_init_attempted",),
         )

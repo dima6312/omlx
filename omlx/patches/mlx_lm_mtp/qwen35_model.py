@@ -49,6 +49,7 @@ The patch is intentionally limited to ``mlx_lm.models.qwen3_5``; mlx-vlm's
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from typing import Any, Optional
 
 from ..dflash_lifecycle import get_dflash_guard_base, set_dflash_guard_base
@@ -423,6 +424,8 @@ def _patch_qwen3_5_text_model(q35: Any) -> None:
         cache=None,
         input_embeddings=None,
         n_confirmed: int = 0,
+        capture_layer_ids=None,
+        capture_sink=None,
     ):
         import mlx.core as mx
 
@@ -453,11 +456,19 @@ def _patch_qwen3_5_text_model(q35: Any) -> None:
         if pipeline_rank < pipeline_size - 1:
             hidden_states = mx.distributed.recv_like(hidden_states, pipeline_rank + 1)
 
-        for layer, c in zip(layers, cache):
+        wanted = set(capture_layer_ids or ())
+        if wanted and pipeline_size > 1:
+            raise ValueError("layer captures need the whole model on one rank")
+        captured = {}
+        for index, (layer, c) in enumerate(zip(layers, cache)):
             mask = ssm_mask if layer.is_linear else fa_mask
             hidden_states = layer(
                 hidden_states, mask=mask, cache=c, n_confirmed=n_confirmed
             )
+            if index in wanted:
+                captured[index] = hidden_states
+        if capture_sink is not None:
+            capture_sink.extend(captured[i] for i in capture_layer_ids or ())
 
         if pipeline_rank != 0:
             hidden_states = mx.distributed.send(
@@ -537,12 +548,30 @@ def _patch_text_model(q35: Any) -> None:
         input_embeddings=None,
         return_hidden: bool = False,
         n_confirmed: int = 0,
+        capture_layer_ids=None,
     ):
+        drafter = getattr(self, "_omlx_drafter", None)
+        scope = getattr(drafter, "scope_uids", None)
+        # An ordinary decode step while a block drafter is attached keeps the
+        # committed token in the drafter context.
+        observe = bool(
+            capture_layer_ids is None
+            and not return_hidden
+            and scope
+            and inputs is not None
+            and inputs.ndim == 2
+            and tuple(inputs.shape) == (len(scope), 1)
+        )
+        if observe:
+            capture_layer_ids = list(drafter.target_layer_ids)
+        captured = [] if capture_layer_ids else None
         hidden = self.model(
             inputs,
             cache,
             input_embeddings=input_embeddings,
             n_confirmed=n_confirmed,
+            capture_layer_ids=capture_layer_ids,
+            capture_sink=captured,
         )
         normed = self.model.norm(hidden)
         if not return_hidden and not n_confirmed and input_embeddings is None:
@@ -558,9 +587,31 @@ def _patch_text_model(q35: Any) -> None:
             out = self.model.embed_tokens.as_linear(normed)
         else:
             out = self.lm_head(normed)
+        if observe:
+            drafter.observe(scope, captured)
+            return out
+        if captured is not None:
+            # Layer captures need an output object; a verify also carries
+            # the head's pre-norm hidden last. Rollback stays on
+            # mtp_partial_rollback (no gdn_states).
+            return SimpleNamespace(
+                logits=out,
+                hidden_states=captured + ([hidden] if return_hidden else []),
+                gdn_states=None,
+            )
         if return_hidden:
             return out, hidden
         return out
+
+    def rollback_speculative_cache(self, caches, gdn_states, accepted, block_size):
+        """Single-row rollback through ``mtp_partial_rollback``.
+
+        mlx-vlm's DFlash drafter bind requires this hook on the target.
+        """
+        accepted = int(accepted)
+        if not self.mtp_partial_rollback(caches, accepted, int(block_size) - 1):
+            raise RuntimeError("qwen3_5 cache rejected the speculative rollback")
+        return accepted
 
     def mtp_forward(
         self,
@@ -761,6 +812,7 @@ def _patch_outer_model(q35: Any) -> None:
         input_embeddings=None,
         return_hidden: bool = False,
         n_confirmed: int = 0,
+        capture_layer_ids=None,
     ):
         return self.language_model(
             inputs,
@@ -768,6 +820,7 @@ def _patch_outer_model(q35: Any) -> None:
             input_embeddings=input_embeddings,
             return_hidden=return_hidden,
             n_confirmed=n_confirmed,
+            capture_layer_ids=capture_layer_ids,
         )
 
     def mtp_forward(

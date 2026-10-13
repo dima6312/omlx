@@ -890,8 +890,8 @@ def maybe_apply_pre_load_patches(
     # never had MTP heads.
     # The batched DFlash drafter rides the Lightning MTP verify path, so its
     # patches are installed even when the checkpoint declares no MTP heads.
-    dflash_batched = for_vlm and dflash_batched_supported(
-        model_type, "vlm"
+    dflash_batched = dflash_batched_supported(
+        model_type, "vlm" if for_vlm else "batched"
     ) and dflash_batched_requested(model_settings)
     if _is_mtp_compatible(config, model_type) or dflash_batched:
         mtp_enabled = bool(
@@ -1313,22 +1313,26 @@ def _checkpoint_has_mtp_weights(model_path: str | Path) -> bool:
     return _checkpoint_weight_prefix(Path(model_path) / "mtp", prefixes) is not None
 
 
-_DFLASH_BATCHED_MODEL_TYPES = (
-    "qwen3_5",
-    "qwen3_5_moe",
-    "glm5_next",
-    "gemma4",
-    "gemma4_unified",
-)
+# Model types whose engine runs DFlash as a block drafter, by engine type.
+_DFLASH_BATCHED_MODEL_TYPES = {
+    "vlm": (
+        "qwen3_5",
+        "qwen3_5_moe",
+        "glm5_next",
+        "gemma4",
+        "gemma4_unified",
+        "muse_glimmer",
+    ),
+    "batched": ("qwen3_5", "qwen3_5_moe", "qwen3", "qwen3_moe", "laguna"),
+}
 
 
 def dflash_batched_supported(model_type: str | None, engine_type: str | None) -> bool:
-    """True when DFlash runs as a block drafter inside the batched VLM engine.
+    """True when DFlash runs as a block drafter inside the batched engine.
 
-    Other DFlash targets (laguna, mimo, muse, mlx-lm text loads) keep the
-    single-stream DFlashEngine.
+    MiMo V2 keeps the single-stream DFlashEngine.
     """
-    return engine_type == "vlm" and model_type in _DFLASH_BATCHED_MODEL_TYPES
+    return model_type in _DFLASH_BATCHED_MODEL_TYPES.get(engine_type or "", ())
 
 
 def dflash_batched_requested(model_settings: Any | None) -> bool:

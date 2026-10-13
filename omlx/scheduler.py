@@ -6712,7 +6712,13 @@ class Scheduler:
         chunk_kwargs = {}
         if self._supports_skip_lm_head():
             chunk_kwargs["skip_lm_head"] = True
-        chunk_start = state.base_size + state.tokens_processed
+        # Prompt position of the chunk: without boundary snapshots base_size
+        # stays 0 even when a prefix is cached.
+        chunk_start = state.tokens_processed + (
+            state.base_size
+            if state.boundary_enabled
+            else max(int(getattr(state.request, "cached_tokens", 0) or 0), 0)
+        )
         capture_from = self._dflash_prefill_capture(
             state.request,
             prefill_model,

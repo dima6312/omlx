@@ -6,15 +6,19 @@ The drafter replaces the embedded MTP head as the draft source inside
 rollback and emission stay the same, and this module only turns captured
 target hidden states into the next draft block for every row.
 
-The draft model itself is mlx-vlm's ``DFlash2DraftModel`` (or the DFlash v1
-``DFlashDraftModel``). Its ``draft_block`` takes the target hidden states of
-the tokens committed since the previous call and appends them to a per-row
+The draft model is loaded by mlx-vlm: DFlash2, DFlash v1, Laguna or the Muse
+Glimmer assistant. Its ``draft_block`` takes the target hidden states of the
+tokens committed since the previous call and appends them to a per-row
 sliding-window context cache, so each row keeps its own cache here and the
-verify path feeds it the accepted positions after every cycle.
+verify path feeds it the accepted positions after every cycle. The forward
+here mirrors those classes, including their projection, gating and mask
+differences.
 """
 
 from __future__ import annotations
 
+import inspect
+import json
 import logging
 import math
 import time
@@ -26,7 +30,9 @@ from typing import Any
 
 import mlx.core as mx
 import mlx.nn as nn
+from mlx_vlm.models.rope_utils import initialize_rope
 from mlx_vlm.speculative.drafters import load_drafter
+from mlx_vlm.utils import get_model_path
 
 from ..model_settings import MAX_LIGHTNING_MTP_DRAFT_TOKENS
 from ..patches import qwen35_packed_linear, qwen35_verify_qmm
@@ -179,6 +185,62 @@ def _mlp(mlp, x: mx.array) -> mx.array:
     return mlp(x)
 
 
+def _project_context(model, hidden: mx.array) -> mx.array:
+    """Turn concatenated layer captures into the drafter's context rows."""
+    encoder = getattr(model, "encoder", None)
+    if encoder is not None:
+        # Muse Glimmer's assistant keeps fc and its norm in an encoder.
+        return encoder(hidden)
+    norms = getattr(model, "aux_hidden_norms", None)
+    if norms:
+        # Laguna normalizes each captured layer before the shared projection.
+        parts = mx.split(hidden, len(norms), axis=-1)
+        hidden = mx.concatenate(
+            [norm(part) for norm, part in zip(norms, parts)], axis=-1
+        )
+    return model.hidden_norm(model.fc(hidden))
+
+
+def _project_qkv(attn, x: mx.array, context: mx.array) -> tuple:
+    """Block queries plus keys and values for ``context`` and the block."""
+    fused = getattr(attn, "qkv_proj", None)
+    if fused is None:
+        project_kv = getattr(attn, "_project_kv", None)
+        if project_kv is None:
+            return (
+                attn.q_proj(x),
+                attn.k_proj(context),
+                attn.v_proj(context),
+                attn.k_proj(x),
+                attn.v_proj(x),
+            )
+        return (attn.q_proj(x), *project_kv(context), *project_kv(x))
+    # One read of the fused weight serves the context and the block rows.
+    width = int(context.shape[1])
+    out = fused(mx.concatenate([context, x], axis=1))
+    q_size = attn.n_heads * attn.head_dim
+    kv_size = attn.n_kv_heads * attn.head_dim
+    ctx, blk = out[:, :width], out[:, width:]
+    return (
+        blk[..., :q_size],
+        ctx[..., q_size : q_size + kv_size],
+        ctx[..., q_size + kv_size :],
+        blk[..., q_size : q_size + kv_size],
+        blk[..., q_size + kv_size :],
+    )
+
+
+def _gate_output(attn, x: mx.array, attended: mx.array) -> mx.array:
+    """Laguna's per-head softplus gate on the attention output."""
+    gate_proj = getattr(attn, "g_proj", None)
+    if gate_proj is None:
+        return attended
+    batch, length, _ = attended.shape
+    gate = nn.softplus(gate_proj(x).astype(mx.float32)).astype(attended.dtype)
+    attended = attended.reshape(batch, length, attn.n_heads, -1) * gate[..., None]
+    return attended.reshape(batch, length, -1)
+
+
 def _greedy_proposals(logits: mx.array) -> mx.array:
     # DFlash v1 samples proposals from this callable; the DFlash2 selector
     # only looks for ``sample_proposal`` on it and otherwise takes argmax.
@@ -214,6 +276,10 @@ class DFlashDrafter:
         # Adaptive: Lightning MTP's depth controllers choose how many drafts
         # of each block to verify. Otherwise the whole block is verified.
         self.adaptive = bool(adaptive)
+        attn = model.layers[0].self_attn
+        # Laguna drafts with causal block attention; DFlash v1/v2 blocks
+        # attend both ways unless the checkpoint says otherwise.
+        self.causal = bool(getattr(attn, "causal", getattr(attn, "is_causal", False)))
         self._rows: dict[Any, _RowContext] = {}
         self._cohort: _Cohort | None = None
         # Prefill captures wait under the request id until the scheduler
@@ -623,9 +689,10 @@ class DFlashDrafter:
         capacity = self.capacity
         batch = len(rows)
         block = self.block_size
-        dtype = model.fc.weight.dtype if hasattr(model.fc, "weight") else mx.bfloat16
-        if hasattr(model.fc, "scales"):
-            dtype = model.fc.scales.dtype
+        fc = model.encoder.fc if hasattr(model, "encoder") else model.fc
+        dtype = fc.weight.dtype if hasattr(fc, "weight") else mx.bfloat16
+        if hasattr(fc, "scales"):
+            dtype = fc.scales.dtype
 
         # Context segments: keep at most ``slots`` newest tokens per row and
         # count the rest as skipped so absolute positions stay aligned. A
@@ -668,7 +735,7 @@ class DFlashDrafter:
             ],
             axis=0,
         )
-        h_ctx = model.hidden_norm(model.fc(padded))
+        h_ctx = _project_context(model, padded)
         if any(prior is not None for prior in restored):
             width = max(lengths)
             parts = []
@@ -714,9 +781,22 @@ class DFlashDrafter:
         ring_valid = (
             (pos >= 0) & (pos >= (totals - slots)[:, None]) & (pos < totals[:, None])
         )
-        mask = mx.concatenate(
-            [ring_valid, mx.ones((batch, block), dtype=mx.bool_)], axis=1
-        )[:, None, None, :]
+        if self.causal:
+            # Each block query sees the context and the block rows up to it.
+            mask = mx.concatenate(
+                [
+                    mx.broadcast_to(ring_valid[:, None, :], (batch, block, capacity)),
+                    mx.broadcast_to(
+                        mx.tril(mx.ones((block, block), dtype=mx.bool_)),
+                        (batch, block, block),
+                    ),
+                ],
+                axis=2,
+            )[:, None]
+        else:
+            mask = mx.concatenate(
+                [ring_valid, mx.ones((batch, block), dtype=mx.bool_)], axis=1
+            )[:, None, None, :]
 
         new_keys, new_values = [], []
         for layer_index, layer in enumerate(model.layers):
@@ -730,7 +810,9 @@ class DFlashDrafter:
             if attention_conv is not None:
                 x, kernel = _conv_prepare(attention_conv, x)
 
-            ctx_keys, ctx_values = attn._project_kv(h_ctx)
+            queries, ctx_keys, ctx_values, prop_keys, prop_values = _project_qkv(
+                attn, x, h_ctx
+            )
             ctx_keys = attn.k_norm(
                 ctx_keys.reshape(batch, width, attn.n_kv_heads, -1)
             ).transpose(0, 2, 1, 3)
@@ -747,8 +829,6 @@ class DFlashDrafter:
             new_keys.append(ring_keys)
             new_values.append(ring_values)
 
-            queries = attn.q_proj(x)
-            prop_keys, prop_values = attn._project_kv(x)
             queries = attn.q_norm(
                 queries.reshape(batch, block, attn.n_heads, -1)
             ).transpose(0, 2, 1, 3)
@@ -768,11 +848,10 @@ class DFlashDrafter:
                 values,
                 scale=attn.scale,
                 mask=mask,
-                sinks=attn.attention_sink_bias,
+                sinks=getattr(attn, "attention_sink_bias", None),
             )
-            attended = attn.o_proj(
-                attended.transpose(0, 2, 1, 3).reshape(batch, block, -1)
-            )
+            attended = attended.transpose(0, 2, 1, 3).reshape(batch, block, -1)
+            attended = attn.o_proj(_gate_output(attn, x, attended))
             if attention_conv is not None:
                 attended = _conv_finish(attention_conv, attended, kernel)
             h = residual + attended
@@ -1166,10 +1245,31 @@ def quantize_drafter(model: nn.Module, *, bits: int, group_size: int) -> int:
     return quantized
 
 
+def _apply_partial_rope(model: nn.Module, config: dict) -> None:
+    """Rotate only the leading part of each head when the checkpoint says so.
+
+    mlx-vlm builds the drafter RoPE over the whole head and drops
+    ``partial_rotary_factor`` (Laguna, MiMo).
+    """
+    partial = float(config.get("partial_rotary_factor") or 1.0)
+    if partial >= 1.0:
+        return
+    scaling = config.get("rope_parameters") or config.get("rope_scaling")
+    base = config.get("rope_theta") or (scaling or {}).get("rope_theta")
+    model.rope = initialize_rope(
+        int(int(config["head_dim"]) * partial),
+        base=float(base),
+        traditional=False,
+        scaling_config=scaling,
+        max_position_embeddings=config.get("max_position_embeddings"),
+    )
+
+
 def load_dflash_drafter(
     path: str,
     target_model: Any,
     *,
+    tokenizer: Any = None,
     block_size: int | None = None,
     quant_enabled: bool = False,
     quant_bits: int = 4,
@@ -1193,7 +1293,17 @@ def load_dflash_drafter(
             quant_bits,
             quant_group_size,
         )
-    model.bind(target_model)
+    config = json.loads((get_model_path(path) / "config.json").read_text())
+    _apply_partial_rope(model, config)
+    # Laguna checks the target vocabulary through the tokenizer when the
+    # target (an mlx-lm model) carries no config.
+    if (
+        tokenizer is not None
+        and "tokenizer" in inspect.signature(model.bind).parameters
+    ):
+        model.bind(target_model, tokenizer=tokenizer)
+    else:
+        model.bind(target_model)
     language_model = getattr(target_model, "language_model", target_model)
     block = resolve_block_size(
         model,

@@ -50,6 +50,7 @@ from ..exceptions import InvalidRequestError
 from ..model_settings import ane_prefill_backend, ane_prefill_fraction
 from ..models.vlm import VLMModelAdapter
 from ..patches.gemma4_audio import apply_gemma4_audio_patch
+from ..patches.mlx_lm_mtp import drafter_target
 from ..patches.mlx_vlm_pixtral_torch_free import apply_pixtral_torch_free_patch
 from ..reasoning_effort import apply_chat_template_with_reasoning_effort_fallback
 from ..utils.image import (
@@ -2884,6 +2885,17 @@ class VLMBatchedEngine(BaseEngine):
     @property
     def vlm_model(self) -> Any | None:
         """The loaded mlx-vlm model (target for external drafters)."""
+        return self._vlm_model
+
+    def prepare_dflash_target(self) -> Any:
+        """Return the model a DFlash drafter binds to, ready for captures.
+
+        Language models without speculative rollback (Muse Glimmer) gain
+        layer captures and rollback here, before the drafter binds.
+        """
+        language_model = self._vlm_model.language_model
+        if not hasattr(language_model, "rollback_speculative_cache"):
+            drafter_target.apply(language_model)
         return self._vlm_model
 
     def set_dflash_drafter(self, drafter: Any) -> None:

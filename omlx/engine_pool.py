@@ -3885,9 +3885,8 @@ class EnginePool:
                         entry.config_model_type, effective_type
                     )
                 ):
-                    # Qwen3.5-family, GLM-5.3 and Gemma 4 VLM targets draft
-                    # inside the batched engine; the drafter is attached after
-                    # start below.
+                    # Batched-drafter targets draft inside the batched engine;
+                    # the drafter is attached after start below.
                     logger.info(
                         "DFlash enabled for %s as a batched drafter, draft=%s",
                         model_id,
@@ -4170,6 +4169,7 @@ class EnginePool:
 
                     entry.model_type = "llm"
                     entry.engine_type = "batched"
+                    effective_type = "batched"
                     logger.info(
                         f"Successfully loaded {model_id} as LLM (fallback from VLM)"
                     )
@@ -4227,7 +4227,8 @@ class EnginePool:
 
                     return load_dflash_drafter(
                         path,
-                        engine.vlm_model,
+                        engine.prepare_dflash_target(),
+                        tokenizer=engine.tokenizer,
                         block_size=getattr(model_settings, "dflash_block_size", None),
                         quant_enabled=bool(
                             getattr(model_settings, "dflash_draft_quant_enabled", False)

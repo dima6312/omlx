@@ -18,14 +18,20 @@ from mlx.utils import tree_flatten
 from omlx.cache.type_registry import CacheTypeRegistry
 from mlx_lm.generate_utils import BatchCounters
 from mlx_lm.generate import BatchGenerator
-from mlx_lm.models.cache import KVCache
+from mlx_lm.models.cache import KVCache, make_prompt_cache
 
 from omlx.model_settings import ModelSettings
 from omlx.patches import mlx_lm_mtp
 from omlx.patches.mlx_lm_mtp import batch_generator as bg
-from omlx.patches.mlx_lm_mtp import batched_head, cache_rollback, fused_batch
+from omlx.patches.mlx_lm_mtp import (
+    batched_head,
+    cache_rollback,
+    drafter_target,
+    fused_batch,
+)
 from omlx.patches.mlx_lm_mtp.batch_policy import BatchPolicy
 from omlx.patches.mlx_vlm_mtp import qwen35_verify_linear
+from omlx.speculative import dflash_drafter as dd
 from omlx.utils.model_loading import (
     _has_mtp_heads,
     _is_mtp_compatible,
@@ -3643,6 +3649,207 @@ def test_block_drafter_clips_sampled_draft_distributions():
     assert output[1] == list(range(12, 42))
     assert {r.finish_reason for r in terminal.values()} == {"length"}
     assert min(width for _, width in _verify_widths(model)) < 6
+
+
+def _tiny_qwen3(seed=0, layers=6, hidden=32, vocab=64):
+    from mlx_lm.models import qwen3
+
+    mx.random.seed(seed)
+    model = qwen3.Model(
+        qwen3.ModelArgs(
+            model_type="qwen3",
+            hidden_size=hidden,
+            num_hidden_layers=layers,
+            intermediate_size=64,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=8,
+            rms_norm_eps=1e-6,
+            vocab_size=vocab,
+            max_position_embeddings=512,
+            rope_theta=10000.0,
+            tie_word_embeddings=False,
+        )
+    )
+    mx.eval(model.parameters())
+    return model
+
+
+def _tiny_laguna(seed=0):
+    """Six-layer Laguna target whose sliding window wraps within a test."""
+    from omlx.patches.laguna import laguna_model
+
+    mx.random.seed(seed)
+    model = laguna_model.Model(
+        laguna_model.ModelArgs(
+            model_type="laguna",
+            vocab_size=64,
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=6,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=8,
+            max_position_embeddings=512,
+            sliding_window=6,
+            layer_types=["full_attention"] + ["sliding_attention"] * 5,
+            partial_rotary_factor=0.5,
+        )
+    )
+    mx.eval(model.parameters())
+    return model
+
+
+def _tiny_qwen35_text():
+    from mlx_lm.models import qwen3_5
+
+    from omlx.patches.mlx_lm_mtp import qwen35_model
+
+    assert qwen35_model.apply()
+    mx.random.seed(1)
+    model = qwen3_5.TextModel(
+        qwen3_5.TextModelArgs.from_dict(
+            {
+                "model_type": "qwen3_5",
+                "hidden_size": 64,
+                "intermediate_size": 128,
+                "num_hidden_layers": 4,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 2,
+                "vocab_size": 256,
+                "linear_num_value_heads": 2,
+                "linear_num_key_heads": 2,
+                "linear_key_head_dim": 16,
+                "linear_value_head_dim": 16,
+                "linear_conv_kernel_dim": 3,
+                "full_attention_interval": 2,
+                "tie_word_embeddings": True,
+                "rms_norm_eps": 1e-5,
+                "head_dim": 32,
+                "rope_theta": 1000.0,
+                "partial_rotary_factor": 0.5,
+                "max_position_embeddings": 128,
+            }
+        )
+    )
+    mx.eval(model.parameters())
+    return model
+
+
+@pytest.mark.parametrize("family", ["qwen3", "qwen3_5"])
+def test_text_targets_return_drafter_layer_captures(family):
+    """mlx-lm text targets return requested layer outputs in request order,
+    append the head hidden on verify, and feed the drafter on decode."""
+    if family == "qwen3":
+        model = _tiny_qwen3()
+        drafter_target.apply(model)
+    else:
+        model = _tiny_qwen35_text()
+    layers = len(model.model.layers)
+    tokens = mx.array([[1, 2, 3, 4, 5]])
+    plain = model(tokens, cache=make_prompt_cache(model))
+    every = model(
+        tokens, cache=make_prompt_cache(model), capture_layer_ids=list(range(layers))
+    )
+    assert mx.array_equal(every.logits, plain).item()
+    assert len(every.hidden_states) == layers
+
+    picked = model(tokens, cache=make_prompt_cache(model), capture_layer_ids=[2, 0])
+    for got, index in zip(picked.hidden_states, (2, 0)):
+        assert mx.array_equal(got, every.hidden_states[index]).item()
+
+    verify = model(
+        tokens,
+        cache=make_prompt_cache(model),
+        return_hidden=True,
+        n_confirmed=1,
+        capture_layer_ids=[1],
+    )
+    assert len(verify.hidden_states) == 2 and verify.gdn_states is None
+    assert mx.array_equal(verify.hidden_states[0], every.hidden_states[1]).item()
+
+    observed = []
+    model._omlx_drafter = SimpleNamespace(
+        scope_uids=(3,),
+        target_layer_ids=[layers - 1],
+        observe=lambda uids, caps: observed.append((uids, caps)),
+    )
+    try:
+        step = model(mx.array([[6]]), cache=make_prompt_cache(model))
+    finally:
+        model._omlx_drafter = None
+    assert isinstance(step, mx.array)
+    [(uids, caps)] = observed
+    assert uids == (3,) and caps[0].shape[:2] == (1, 1)
+
+
+@pytest.mark.parametrize("make_target", [_tiny_qwen3, _tiny_laguna])
+def test_plain_attention_target_drafts_like_plain_decode(monkeypatch, make_target):
+    """A Qwen3 or Laguna target with a DFlash2 drafter emits the plain decode
+    tokens, and rejected verify rows are trimmed from the KV caches, also
+    after Laguna's sliding window wraps."""
+    from mlx_vlm.speculative.drafters.dflash2.config import DFlash2Config
+    from mlx_vlm.speculative.drafters.dflash2.dflash2 import DFlash2DraftModel
+
+    prompts, limits = [[1, 2, 3, 4]], [24]
+    plain_model = make_target(seed=3)
+    plain_model._omlx_mtp_decode_enabled = False
+    expected, _ = generate(plain_model, prompts, limits)
+
+    model = make_target(seed=3)
+    drafter_target.apply(model)
+    config = DFlash2Config.from_dict(
+        {
+            "model_type": "qwen3",
+            "hidden_size": 32,
+            "intermediate_size": 48,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 8,
+            "vocab_size": 64,
+            "rms_norm_eps": 1e-6,
+            "max_position_embeddings": 512,
+            "num_target_layers": 6,
+            "sliding_window": 16,
+            "layer_types": ["sliding_attention"],
+            "rope_parameters": {"rope_theta": 10000.0, "rope_type": "default"},
+            "tie_word_embeddings": False,
+            "dflash_config": {
+                "block_size": 4,
+                "conv_group_size": 8,
+                "conv_kernel_size": 2,
+                "mask_token_id": 63,
+                "selector_rank": 8,
+                "selector_top_k": 4,
+                "target_layer_ids": [1, 3, 5],
+            },
+        }
+    )
+    mx.random.seed(4)
+    draft = DFlash2DraftModel(config)
+    draft.load_weights(
+        [
+            (key, mx.random.normal(value.shape) * 0.2)
+            for key, value in tree_flatten(draft.parameters())
+        ],
+        strict=False,
+    )
+    draft.bind(model)
+    drafter = dd.DFlashDrafter(draft, block_size=4, source_path="tiny", adaptive=False)
+    dd.attach_drafter(model, drafter)
+    assert model._omlx_mtp_multi_request is False
+    trims = []
+    rollback = type(model).mtp_partial_rollback
+
+    def counted(self, cache, accepted, num_drafts):
+        trims.append(num_drafts - accepted)
+        return rollback(self, cache, accepted, num_drafts)
+
+    monkeypatch.setattr(type(model), "mtp_partial_rollback", counted)
+    output, _ = generate(model, prompts, limits)
+    assert output == expected
+    assert any(trim > 0 for trim in trims)
 
 
 def test_clip_block_drafts_keeps_aligned_proposal_prefix():

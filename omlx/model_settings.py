@@ -267,11 +267,12 @@ class ModelSettings:
         specprefill_keep_pct: Keep rate for SpecPrefill (0.1–0.5).
         specprefill_threshold: Min tokens to trigger SpecPrefill.
         dflash_enabled: Enable DFlash speculative decoding. Qwen3.5-family,
-            GLM-5.3 and Gemma 4 VLM targets draft inside the batched engine
-            (Lightning MTP verify path with greedy or sampled acceptance;
-            Gemma 4 speculates for single requests only); other targets use
-            the single-stream DFlash engine, which alone honours the max_ctx,
-            cache, window and sink settings below.
+            Qwen3 and Laguna targets, and GLM-5.3, Gemma 4 and Muse Glimmer
+            VLM targets, draft inside the batched engine (Lightning MTP
+            verify path with greedy or sampled acceptance; Qwen3, Laguna,
+            Gemma 4 and Muse Glimmer speculate for single requests only);
+            MiMo V2 uses the single-stream DFlash engine, which alone honours
+            the max_ctx, cache, window and sink settings below.
         dflash_draft_model: Path/repo for DFlash draft checkpoint.
         dflash_draft_quant_enabled: Enable draft model quantization.
         dflash_draft_quant_weight_bits: Quantization weight bits (2, 4, 8).
