@@ -36,6 +36,7 @@ from omlx.request import Request, RequestStatus, SamplingParams
 from omlx.scheduler import Scheduler
 from omlx.speculative import dflash as dd
 from omlx.speculative.dflash import kernels, selection, variants
+from omlx.utils.model_loading import dflash_batched_supported
 
 VOCAB = 64
 HIDDEN = 32
@@ -839,6 +840,82 @@ def test_fused_selector_matches_candidate_sampling():
                     assert mx.allclose(got, expected[0], atol=1e-4).item()
                     assert got[picked].item() > -float("inf")
                 previous = tokens[position]
+
+
+def _tiny_dspark_drafter(seed=0):
+    """A small random-weight DSparkDraftModel bound to _tiny_target(), wrapped in DFlashDrafter."""
+    mx.random.seed(seed)
+    # Build a minimal DSparkConfig
+    dflash_config = {
+        "block_size": BLOCK,
+        "mask_token_id": VOCAB - 1,
+        "target_layer_ids": TARGET_LAYER_IDS,
+        "num_target_layers": TARGET_LAYERS,
+        "markov_rank": 8,
+        "sample_from_anchor": True,
+    }
+    config = DSparkConfig.from_dict(
+        {
+            "model_type": "qwen3",
+            "hidden_size": HIDDEN,
+            "intermediate_size": 48,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 8,
+            "vocab_size": VOCAB,
+            "rms_norm_eps": 1e-6,
+            "max_position_embeddings": 4096,
+            "num_target_layers": TARGET_LAYERS,
+            "sliding_window": WINDOW,
+            "layer_types": ["sliding_attention", "sliding_attention"],
+            "rope_parameters": {"rope_theta": 10000.0, "rope_type": "default"},
+            "tie_word_embeddings": False,
+            "dflash_config": dflash_config,
+        }
+    )
+    model = DSparkDraftModel(config)
+    # Random weights in float32 so both forwards share tight numerics.
+    params = {
+        key: mx.random.normal(value.shape) * 0.2
+        for key, value in nn.utils.tree_flatten(model.parameters())
+    }
+    model.load_weights(list(params.items()), strict=False)
+    model.bind(_tiny_target())
+    mx.eval(model.parameters())
+    return dd.DFlashDrafter(model, block_size=BLOCK, source_path="tiny")
+
+
+
+
+def test_dspark_greedy_parity_with_reference():
+    """DSpark proposes from the anchor position and applies its Markov head."""
+    for length in (1, 3, WINDOW - 1):
+        drafter = _tiny_dspark_drafter()
+        context = mx.concatenate(_captured(length, seed=60 + length), axis=-1)
+        anchor = mx.array([7], dtype=mx.int32)
+        cache = drafter.model.make_cache()
+        for layer_cache in cache:
+            layer_cache.offset = 0
+        expected = drafter.model.draft_block(
+            anchor, context, cache, BLOCK, lambda logits: mx.argmax(logits, axis=-1)
+        )
+        row = drafter._row(0)
+        got = drafter._draft_batched(
+            [(SimpleNamespace(uid=0), row, context, anchor, None)]
+        )[0][0]
+        assert got.shape == (1, BLOCK - 1)
+        assert got.tolist() == expected.tolist()
+
+
+
+
+def test_dflash_batched_supported_minicpmv4_7():
+    """dflash_batched_supported('minicpmv4_7', 'vlm') is True and
+    dflash_batched_supported('minicpmv4_7', 'batched') is False."""
+    assert dflash_batched_supported("minicpmv4_7", "vlm") is True
+    assert dflash_batched_supported("minicpmv4_7", "batched") is False
+
 
 
 def test_conv_kernel_matches_grouped_dynamic_convolve():
