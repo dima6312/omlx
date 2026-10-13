@@ -2610,6 +2610,15 @@ class TestRotatingCacheMtpUndo:
 
         self._run_equivalence(lambda: BatchRotatingKVCache(8, [0]), num_drafts=8)
 
+    @pytest.mark.parametrize("num_drafts", [1, 3, 8])
+    def test_vlm_batch_rotating_kv_cache_undo(self, num_drafts):
+        """Gemma 4's sliding layers use mlx-vlm's own rotating cache."""
+        vlm_cache = pytest.importorskip("mlx_vlm.models.cache")
+
+        self._run_equivalence(
+            lambda: vlm_cache.BatchRotatingKVCache(8, [0]), num_drafts=num_drafts
+        )
+
     def test_unarmed_update_keeps_stock_semantics(self):
         import mlx.core as mx
 

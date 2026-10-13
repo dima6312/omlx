@@ -7,7 +7,8 @@ Two pieces:
    snapshots ``(conv_state, ssm_state)`` after the confirmed prefix of an
    MTP draft+verify forward, then restores it when the draft is rejected.
 
-2. A verify-block undo log on ``RotatingKVCache`` / ``BatchRotatingKVCache``:
+2. A verify-block undo log on ``RotatingKVCache`` / ``BatchRotatingKVCache``
+   (the mlx-lm classes and mlx-vlm's own copies):
    a rotated rotating cache is not trimmable (the slot of the evicted token
    has been overwritten), so an MTP draft rejection could not discard the
    rejected positions exactly and phantom tokens progressively corrupted
@@ -178,6 +179,17 @@ def _attach_rotating_undo() -> bool:
     _wrap_rotating(RotatingKVCache, ("keys", "values", "offset", "_idx"))
     _wrap_rotating(
         BatchRotatingKVCache,
+        ("keys", "values", "offset", "_offset", "_idx", "rotated", "left_padding"),
+    )
+    try:
+        from mlx_vlm.models import cache as vlm_cache
+    except ImportError:
+        return True
+    # mlx-vlm's own rotating caches (Gemma 4 sliding layers) share the
+    # layout; their stock trim leaves rejected rows in a full window.
+    _wrap_rotating(vlm_cache.RotatingKVCache, ("keys", "values", "offset", "_idx"))
+    _wrap_rotating(
+        vlm_cache.BatchRotatingKVCache,
         ("keys", "values", "offset", "_offset", "_idx", "rotated", "left_padding"),
     )
     return True
