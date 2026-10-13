@@ -431,7 +431,7 @@ def _drafter_for(model: Any) -> Optional[Any]:
     A drafter replaces the embedded MTP head as the draft source. It is
     stamped on the language model as ``_omlx_drafter`` at attach time and
     exposes ``depth``, ``target_layer_ids``, ``draft``, ``observe``,
-    ``release`` and ``decode_scope`` (see omlx.speculative.dflash_drafter).
+    ``release`` and ``decode_scope`` (see omlx.speculative.dflash).
     """
     candidates = [model]
     for attr in ("language_model", "_language_model"):

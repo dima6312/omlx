@@ -31,7 +31,7 @@ from omlx.patches.mlx_lm_mtp import (
 )
 from omlx.patches.mlx_lm_mtp.batch_policy import BatchPolicy
 from omlx.patches.mlx_vlm_mtp import qwen35_verify_linear
-from omlx.speculative import dflash_drafter as dd
+from omlx.speculative import dflash as dd
 from omlx.utils.model_loading import (
     _has_mtp_heads,
     _is_mtp_compatible,

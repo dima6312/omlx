@@ -22,7 +22,7 @@ from ..model_settings import (
 )
 from ..patches.mlx_lm_mtp import drafter_target
 from ..reasoning_effort import apply_chat_template_with_reasoning_effort_fallback
-from ..speculative.dflash_drafter import attach_drafter
+from ..speculative.dflash import attach_drafter
 from ..utils.tokenizer import get_tokenizer_config
 from .base import (
     BaseEngine,

@@ -43,7 +43,7 @@ from omlx.patches.mlx_lm_mtp import prompt_priming as pp
 from omlx.patches.mlx_vlm_glm5_next_compat import decode_kernels as dk
 from omlx.patches.mlx_vlm_mtp import glm5_next_vlm_runtime  # noqa: E402
 from omlx.patches.mlx_vlm_mtp.glm5_next_batch_rollback import rollback_rows
-from omlx.speculative import dflash_drafter as dd
+from omlx.speculative import dflash as dd
 
 N_MAIN = 45
 N_MTP = 1

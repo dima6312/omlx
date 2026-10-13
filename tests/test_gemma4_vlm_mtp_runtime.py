@@ -20,7 +20,7 @@ pytest.importorskip("mlx_vlm.models.gemma4_unified")
 
 from omlx.patches import mlx_lm_mtp as lm_mtp
 from omlx.patches.mlx_vlm_mtp import gemma4_vlm_runtime, set_mtp_attach_enabled
-from omlx.speculative.dflash_drafter import attach_drafter
+from omlx.speculative.dflash import attach_drafter
 
 TINY_ASSISTANT_CONFIG = {
     "model_type": "gemma4_assistant",

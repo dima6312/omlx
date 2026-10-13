@@ -23,7 +23,8 @@ from mlx_vlm.speculative.drafters.muse_glimmer_assistant import (
 )
 
 from omlx.scheduler import Scheduler
-from omlx.speculative import dflash_drafter as dd
+from omlx.speculative import dflash as dd
+from omlx.speculative.dflash import kernels, selection
 
 VOCAB = 64
 HIDDEN = 32
@@ -527,8 +528,8 @@ def test_fused_selector_matches_candidate_sampling():
     unary = mx.take_along_axis(logits, candidates, axis=-1).astype(mx.float32)
     projected = selector.hidden_projection(states).astype(mx.float32)
     for sampler in (make_sampler(temp=1.0, top_p=0.9, top_k=12), None):
-        assert dd._fused_select_eligible(selector, states)
-        proposals = dd._select_fused(
+        assert selection.fused_select_eligible(selector, states)
+        proposals = selection.select_fused(
             selector, states, logits, anchors, [sampler, sampler]
         )
         for row, (tokens, accept) in enumerate(proposals):
@@ -548,7 +549,7 @@ def test_fused_selector_matches_candidate_sampling():
                 if sampler is None:
                     assert picked == int(mx.argmax(scores[0]).item())
                 else:
-                    _, expected = dd._sample_candidates(scores, sampler)
+                    _, expected = selection.sample_candidates(scores, sampler)
                     got = accept.logq[position]
                     assert mx.allclose(got, expected[0], atol=1e-4).item()
                     assert got[picked].item() > -float("inf")
@@ -568,11 +569,11 @@ def test_conv_kernel_matches_grouped_dynamic_convolve():
     )
     x = mx.random.normal((3, BLOCK, 256)).astype(mx.bfloat16)
     expected, dynamic = conv.prepare(x)
-    got, packed = dd._conv_prepare(conv, x)
+    got, packed = kernels.conv_prepare(conv, x)
     assert mx.array_equal(got, expected).item()
     y = expected * 0.5
     assert mx.array_equal(
-        dd._conv_finish(conv, y, packed), conv.finish(y, dynamic)
+        kernels.conv_finish(conv, y, packed), conv.finish(y, dynamic)
     ).item()
 
 

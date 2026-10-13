@@ -1,26 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""DFlash block drafter for the batched Lightning MTP verify path.
-
-The drafter replaces the embedded MTP head as the draft source inside
-``omlx.patches.mlx_lm_mtp``: the shared verify forward, acceptance, cache
-rollback and emission stay the same, and this module only turns captured
-target hidden states into the next draft block for every row.
-
-The draft model is loaded by mlx-vlm: DFlash2, DFlash v1, Laguna or the Muse
-Glimmer assistant. Its ``draft_block`` takes the target hidden states of the
-tokens committed since the previous call and appends them to a per-row
-sliding-window context cache, so each row keeps its own cache here and the
-verify path feeds it the accepted positions after every cycle. The forward
-here mirrors those classes, including their projection, gating and mask
-differences.
-"""
+"""Row-wise DFlash drafting against per-request context rings."""
 
 from __future__ import annotations
 
-import inspect
-import json
-import logging
-import math
 import time
 from collections import OrderedDict
 from collections.abc import Iterable, Sequence
@@ -30,17 +12,10 @@ from typing import Any
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_vlm.models.rope_utils import initialize_rope
-from mlx_vlm.speculative.drafters import load_drafter
-from mlx_vlm.utils import get_model_path
 
-from ..model_settings import MAX_LIGHTNING_MTP_DRAFT_TOKENS
-from ..patches import qwen35_packed_linear, qwen35_verify_qmm
-from ..patches.mlx_lm_mtp import batch_generator as bg
-from ..patches.qwen35_verify_qmm import set_verify_qmm_armed
-from ..utils.sampling import top_k_indices
-
-logger = logging.getLogger(__name__)
+from ...patches.mlx_lm_mtp import batch_generator as bg
+from ...patches.qwen35_verify_qmm import set_verify_qmm_armed
+from . import kernels, selection, variants
 
 # Finished requests whose drafter context stays available for prefix hits.
 _KEPT_REQUESTS = 8
@@ -106,145 +81,6 @@ class _Predraft:
     unfed: list[int]
     proposals: list[tuple]
     contexts: list[mx.array] = field(default_factory=list)
-
-
-# ``_grouped_dynamic_convolve`` for one of the two kernel sets in
-# ``dynamic`` (B, L, 2, KS, G), one thread per output element, with the bf16
-# rounding of each op in the composed version.
-_CONV_SOURCE = """
-    uint e = thread_position_in_grid.x;
-    uint c = e % H;
-    uint t = (e / H) % L;
-    uint bl = e / H;
-    uint g = c / GS;
-    T acc = T(0);
-    for (int o = 0; o < KS; ++o) {
-        T xv = int(t) >= o ? x[e - uint(o) * H] : T(0);
-        T k = static_cast<T>(
-            float(base[(SET * KS + o) * H + c]) + float(dyn[((bl * 2 + SET) * KS + o) * G + g]));
-        T prod = static_cast<T>(float(k) * float(xv));
-        acc = static_cast<T>(float(acc) + float(prod));
-    }
-    out[e] = acc;
-"""
-_CONV_KERNEL = None
-
-
-def _convolve(conv, hidden: mx.array, dynamic: mx.array, which: int) -> mx.array:
-    global _CONV_KERNEL
-    if _CONV_KERNEL is None:
-        _CONV_KERNEL = mx.fast.metal_kernel(
-            name="omlx_dflash2_conv",
-            input_names=["x", "dyn", "base"],
-            output_names=["out"],
-            source=_CONV_SOURCE,
-        )
-    batch, length, width = hidden.shape
-    (out,) = _CONV_KERNEL(
-        inputs=[hidden, dynamic, conv.base_kernel],
-        template=[
-            ("T", hidden.dtype),
-            ("H", width),
-            ("L", length),
-            ("GS", conv.group_size),
-            ("G", width // conv.group_size),
-            ("KS", conv.kernel_size),
-            ("SET", which),
-        ],
-        grid=(hidden.size, 1, 1),
-        threadgroup=(256, 1, 1),
-        output_shapes=[hidden.shape],
-        output_dtypes=[hidden.dtype],
-    )
-    return out
-
-
-def _conv_prepare(conv, hidden: mx.array) -> tuple[mx.array, mx.array]:
-    """``GroupedDynamicCausalConv.prepare``; returns both kernel sets."""
-    groups = hidden.shape[-1] // conv.group_size
-    dynamic = conv.kernel_projection(hidden).reshape(
-        *hidden.shape[:-1], 2, conv.kernel_size, groups
-    )
-    return _convolve(conv, hidden, dynamic, 0), dynamic
-
-
-def _conv_finish(conv, hidden: mx.array, dynamic: mx.array) -> mx.array:
-    return _convolve(conv, hidden, dynamic, 1)
-
-
-def _mlp(mlp, x: mx.array) -> mx.array:
-    """Gated MLP; eight-row verify shapes fuse gate, up and swiglu."""
-    gate = getattr(mlp, "gate_proj", None)
-    up = getattr(mlp, "up_proj", None)
-    if gate is not None and qwen35_verify_qmm.sg8_swiglu_eligible(gate, up, x):
-        batch, length, width = x.shape
-        hidden = qwen35_verify_qmm.vk_swiglu_sg8(
-            x.reshape(batch * length, width), gate, up
-        )
-        return mlp.down_proj(hidden.reshape(batch, length, -1))
-    return mlp(x)
-
-
-def _project_context(model, hidden: mx.array) -> mx.array:
-    """Turn concatenated layer captures into the drafter's context rows."""
-    encoder = getattr(model, "encoder", None)
-    if encoder is not None:
-        # Muse Glimmer's assistant keeps fc and its norm in an encoder.
-        return encoder(hidden)
-    norms = getattr(model, "aux_hidden_norms", None)
-    if norms:
-        # Laguna normalizes each captured layer before the shared projection.
-        parts = mx.split(hidden, len(norms), axis=-1)
-        hidden = mx.concatenate(
-            [norm(part) for norm, part in zip(norms, parts)], axis=-1
-        )
-    return model.hidden_norm(model.fc(hidden))
-
-
-def _project_qkv(attn, x: mx.array, context: mx.array) -> tuple:
-    """Block queries plus keys and values for ``context`` and the block."""
-    fused = getattr(attn, "qkv_proj", None)
-    if fused is None:
-        project_kv = getattr(attn, "_project_kv", None)
-        if project_kv is None:
-            return (
-                attn.q_proj(x),
-                attn.k_proj(context),
-                attn.v_proj(context),
-                attn.k_proj(x),
-                attn.v_proj(x),
-            )
-        return (attn.q_proj(x), *project_kv(context), *project_kv(x))
-    # One read of the fused weight serves the context and the block rows.
-    width = int(context.shape[1])
-    out = fused(mx.concatenate([context, x], axis=1))
-    q_size = attn.n_heads * attn.head_dim
-    kv_size = attn.n_kv_heads * attn.head_dim
-    ctx, blk = out[:, :width], out[:, width:]
-    return (
-        blk[..., :q_size],
-        ctx[..., q_size : q_size + kv_size],
-        ctx[..., q_size + kv_size :],
-        blk[..., q_size : q_size + kv_size],
-        blk[..., q_size + kv_size :],
-    )
-
-
-def _gate_output(attn, x: mx.array, attended: mx.array) -> mx.array:
-    """Laguna's per-head softplus gate on the attention output."""
-    gate_proj = getattr(attn, "g_proj", None)
-    if gate_proj is None:
-        return attended
-    batch, length, _ = attended.shape
-    gate = nn.softplus(gate_proj(x).astype(mx.float32)).astype(attended.dtype)
-    attended = attended.reshape(batch, length, attn.n_heads, -1) * gate[..., None]
-    return attended.reshape(batch, length, -1)
-
-
-def _greedy_proposals(logits: mx.array) -> mx.array:
-    # DFlash v1 samples proposals from this callable; the DFlash2 selector
-    # only looks for ``sample_proposal`` on it and otherwise takes argmax.
-    return mx.argmax(logits, axis=-1)
 
 
 def _concat_captured(captured: Sequence[mx.array]) -> mx.array:
@@ -592,7 +428,7 @@ class DFlashDrafter:
             set_verify_qmm_armed(False)
         self._predraft.unfed = [unfed]
         tokens, accept_lps = proposals[0]
-        mx.async_eval(tokens, *_q_arrays(accept_lps))
+        mx.async_eval(tokens, *selection.q_arrays(accept_lps))
         return True
 
     def adopt_predraft(self, state, count: int) -> None:
@@ -735,7 +571,7 @@ class DFlashDrafter:
             ],
             axis=0,
         )
-        h_ctx = _project_context(model, padded)
+        h_ctx = variants.project_context(model, padded)
         if any(prior is not None for prior in restored):
             width = max(lengths)
             parts = []
@@ -808,10 +644,10 @@ class DFlashDrafter:
             residual = h
             x = layer.input_layernorm(h)
             if attention_conv is not None:
-                x, kernel = _conv_prepare(attention_conv, x)
+                x, kernel = kernels.conv_prepare(attention_conv, x)
 
-            queries, ctx_keys, ctx_values, prop_keys, prop_values = _project_qkv(
-                attn, x, h_ctx
+            queries, ctx_keys, ctx_values, prop_keys, prop_values = (
+                variants.project_qkv(attn, x, h_ctx)
             )
             ctx_keys = attn.k_norm(
                 ctx_keys.reshape(batch, width, attn.n_kv_heads, -1)
@@ -851,18 +687,18 @@ class DFlashDrafter:
                 sinks=getattr(attn, "attention_sink_bias", None),
             )
             attended = attended.transpose(0, 2, 1, 3).reshape(batch, block, -1)
-            attended = attn.o_proj(_gate_output(attn, x, attended))
+            attended = attn.o_proj(variants.gate_output(attn, x, attended))
             if attention_conv is not None:
-                attended = _conv_finish(attention_conv, attended, kernel)
+                attended = kernels.conv_finish(attention_conv, attended, kernel)
             h = residual + attended
 
             residual = h
             x = layer.post_attention_layernorm(h)
             if mlp_conv is not None:
-                x, kernel = _conv_prepare(mlp_conv, x)
-            x = _mlp(layer.mlp, x)
+                x, kernel = kernels.conv_prepare(mlp_conv, x)
+            x = variants.gated_mlp(layer.mlp, x)
             if mlp_conv is not None:
-                x = _conv_finish(mlp_conv, x, kernel)
+                x = kernels.conv_finish(mlp_conv, x, kernel)
             h = residual + x
 
         if commit:
@@ -879,22 +715,26 @@ class DFlashDrafter:
         logits = model._logits(draft_hidden)
         samplers = [sampler for *_, sampler in rows]
         selector = getattr(model, "candidate_selector", None)
-        if selector is not None and _fused_select_eligible(selector, draft_hidden):
-            proposals = _select_fused(selector, draft_hidden, logits, anchors, samplers)
+        if selector is not None and selection.fused_select_eligible(
+            selector, draft_hidden
+        ):
+            proposals = selection.select_fused(
+                selector, draft_hidden, logits, anchors, samplers
+            )
         elif all(sampler is None for sampler in samplers):
             if selector is not None:
                 tokens = selector.select(
-                    draft_hidden, logits, anchors, _greedy_proposals
+                    draft_hidden, logits, anchors, selection.greedy_proposals
                 )
             else:
-                tokens = _greedy_proposals(logits)
+                tokens = selection.greedy_proposals(logits)
             proposals = [(tokens[i : i + 1], []) for i in range(batch)]
         elif selector is not None:
-            proposals = _select_sampled(
+            proposals = selection.select_sampled(
                 selector, draft_hidden, logits, anchors, samplers
             )
         else:
-            proposals = _sample_positions(logits, samplers)
+            proposals = selection.sample_positions(logits, samplers)
         if not commit:
             self._predraft = _Predraft(
                 uids=tuple(uids),
@@ -907,448 +747,3 @@ class DFlashDrafter:
                 contexts=[h_ctx[i : i + 1, :n] for i, n in enumerate(lengths)],
             )
         return proposals
-
-
-def _sample_positions(logits: mx.array, samplers: list) -> list[tuple]:
-    """Independent per-position proposals (DFlash v1) with their q rows."""
-    out = []
-    lp = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
-    for index, sampler in enumerate(samplers):
-        if sampler is None:
-            out.append((mx.argmax(logits[index : index + 1], axis=-1), []))
-            continue
-        tokens, accept = [], []
-        for position in range(lp.shape[1]):
-            token, accept_lp = bg._sample_draft_with_logprobs(
-                sampler, lp[index, position : position + 1]
-            )
-            tokens.append(token.reshape(1))
-            accept.append(accept_lp.reshape(-1))
-        out.append((mx.concatenate(tokens)[None], accept))
-    return out
-
-
-def _sample_candidates(scores: mx.array, sampler) -> tuple[mx.array, mx.array]:
-    """Draw from ``sampler``'s filters applied to candidate scores ``(1, C)``.
-
-    Returns the chosen column and the log density over the candidates. The
-    density is the proposal q that acceptance reads, so the filters only have
-    to match the request's in spirit, not bit for bit.
-    """
-    lp = scores.astype(mx.float32)
-    lp = lp - mx.logsumexp(lp, axis=-1, keepdims=True)
-    count = lp.shape[-1]
-    top_k = int(getattr(sampler, "top_k", 0) or 0)
-    top_p = float(getattr(sampler, "top_p", 0.0) or 0.0)
-    min_p = float(getattr(sampler, "min_p", 0.0) or 0.0)
-    temp = float(getattr(sampler, "temp", 1.0) or 1.0)
-    if 0 < top_k < count:
-        kth = mx.sort(lp, axis=-1)[..., count - top_k : count - top_k + 1]
-        lp = mx.where(lp >= kth, lp, -float("inf"))
-    if 0.0 < top_p < 1.0:
-        order = mx.argsort(-lp, axis=-1)
-        ranked = mx.take_along_axis(lp, order, axis=-1)
-        probs = mx.exp(ranked)
-        keep = (mx.cumsum(probs, axis=-1) - probs) < top_p
-        keep = mx.put_along_axis(
-            mx.zeros(keep.shape, dtype=mx.bool_), order, keep, axis=-1
-        )
-        lp = mx.where(keep, lp, -float("inf"))
-    if min_p > 0.0:
-        floor = lp.max(axis=-1, keepdims=True) + math.log(min_p)
-        lp = mx.where(lp >= floor, lp, -float("inf"))
-    scaled = lp * (1.0 / temp)
-    pick = mx.random.categorical(scaled)
-    return pick, scaled - mx.logsumexp(scaled, axis=-1, keepdims=True)
-
-
-# One threadgroup per row walks the positions: simdgroup c scores candidate
-# c against the previous pick, then simdgroup 0 applies the row's filters
-# (as ``_sample_candidates``) and draws by inverse CDF. Temperature <= 0
-# takes the first argmax.
-_SELECT_SOURCE = """
-    constexpr int C = 16;
-    uint lane = thread_index_in_simdgroup;
-    uint sg = simdgroup_index_in_threadgroup;
-    uint b = threadgroup_position_in_grid.x;
-    threadgroup float scores[C];
-    threadgroup int pred_tg;
-    if (sg == 0 && lane == 0)
-        pred_tg = anchors[b];
-    float temp = params[b * 4 + 0];
-    float top_p = params[b * 4 + 1];
-    int top_k = int(params[b * 4 + 2]);
-    float min_p = params[b * 4 + 3];
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (int p = 0; p < P; ++p) {
-        int row = int(b) * P + p;
-        int pred = pred_tg;
-        int cid = cand[row * C + int(sg)];
-        auto pc = pcb + long(pred) * R;
-        auto sc = scb + long(cid) * R;
-        auto pj = proj + long(row) * R;
-        float acc = 0.0f;
-        for (int i = 0; i < R / 32; ++i) {
-            int d = int(lane) + i * 32;
-            acc += float(pc[d]) * float(pj[d]) * float(sc[d]);
-        }
-        acc = simd_sum(acc);
-        if (lane == 0)
-            scores[sg] = float(unary[row * C + int(sg)]) + acc;
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (sg == 0) {
-            bool live = int(lane) < C;
-            float s = live ? scores[lane] : -INFINITY;
-            float m = simd_max(s);
-            int pick;
-            float q = -INFINITY;
-            if (temp <= 0.0f) {
-                pick = simd_min((live && s == m) ? int(lane) : C);
-            } else {
-                float lp = s - m - log(simd_sum(live ? exp(s - m) : 0.0f));
-                if (!live)
-                    lp = -INFINITY;
-                if (top_k > 0 && top_k < C) {
-                    int greater = 0;
-                    for (int j = 0; j < C; ++j)
-                        greater += simd_shuffle(lp, ushort(j)) > lp ? 1 : 0;
-                    if (greater >= top_k)
-                        lp = -INFINITY;
-                }
-                if (top_p > 0.0f && top_p < 1.0f) {
-                    float prefix = 0.0f;
-                    for (int j = 0; j < C; ++j) {
-                        float o = simd_shuffle(lp, ushort(j));
-                        if (o > lp || (o == lp && j < int(lane)))
-                            prefix += exp(o);
-                    }
-                    if (!(prefix < top_p))
-                        lp = -INFINITY;
-                }
-                if (min_p > 0.0f) {
-                    float floor_ = simd_max(lp) + log(min_p);
-                    if (lp < floor_)
-                        lp = -INFINITY;
-                }
-                float scaled = lp / temp;
-                float sm = simd_max(scaled);
-                float e = scaled == -INFINITY ? 0.0f : exp(scaled - sm);
-                float total = simd_sum(e);
-                q = scaled == -INFINITY ? -INFINITY : scaled - sm - log(total);
-                float cdf = simd_prefix_inclusive_sum(e) / total;
-                float u = uniforms[row];
-                int first = simd_min((e > 0.0f && cdf > u) ? int(lane) : C);
-                int last = simd_max(e > 0.0f ? int(lane) : -1);
-                pick = first < C ? first : last;
-            }
-            if (live)
-                logq[row * C + int(lane)] = q;
-            if (lane == 0) {
-                int token = cand[row * C + pick];
-                tokens[row] = token;
-                pred_tg = token;
-            }
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-"""
-_SELECT_KERNEL = None
-
-
-def _select_kernel():
-    global _SELECT_KERNEL
-    if _SELECT_KERNEL is None:
-        _SELECT_KERNEL = mx.fast.metal_kernel(
-            name="omlx_dflash2_select",
-            input_names=[
-                "cand",
-                "unary",
-                "proj",
-                "anchors",
-                "pcb",
-                "scb",
-                "params",
-                "uniforms",
-            ],
-            output_names=["tokens", "logq"],
-            source=_SELECT_SOURCE,
-        )
-    return _SELECT_KERNEL
-
-
-def _fused_select_eligible(selector, hidden) -> bool:
-    pcb = getattr(selector.predecessor_codebook, "weight", None)
-    scb = getattr(selector.successor_codebook, "weight", None)
-    return (
-        selector.top_k == 16
-        and isinstance(pcb, mx.array)
-        and isinstance(scb, mx.array)
-        and not hasattr(selector.predecessor_codebook, "scales")
-        and not hasattr(selector.successor_codebook, "scales")
-        and pcb.shape[-1] % 32 == 0
-        and hidden.shape[1] <= 32
-    )
-
-
-def _select_fused(selector, hidden, logits, anchors, samplers) -> list[tuple]:
-    """``_select_sampled`` in one launch with sparse q over the candidates."""
-    batch, length, vocab = logits.shape
-    candidates = top_k_indices(logits, selector.top_k).astype(mx.int32)
-    unary = mx.take_along_axis(logits, candidates, axis=-1)
-    projected = selector.hidden_projection(hidden)
-    params = mx.array(
-        [
-            (
-                [0.0, 0.0, 0.0, 0.0]
-                if sampler is None
-                else [
-                    float(getattr(sampler, "temp", 1.0) or 1.0),
-                    float(getattr(sampler, "top_p", 0.0) or 0.0),
-                    float(int(getattr(sampler, "top_k", 0) or 0)),
-                    float(getattr(sampler, "min_p", 0.0) or 0.0),
-                ]
-            )
-            for sampler in samplers
-        ],
-        dtype=mx.float32,
-    )
-    pcb = selector.predecessor_codebook.weight
-    tokens, logq = _select_kernel()(
-        inputs=[
-            candidates,
-            unary,
-            projected,
-            anchors.reshape(-1).astype(mx.int32),
-            pcb,
-            selector.successor_codebook.weight,
-            params,
-            mx.random.uniform(shape=(batch, length)),
-        ],
-        template=[("P", length), ("R", pcb.shape[-1])],
-        grid=(32 * selector.top_k * batch, 1, 1),
-        threadgroup=(32 * selector.top_k, 1, 1),
-        output_shapes=[(batch, length), (batch, length, selector.top_k)],
-        output_dtypes=[mx.int32, mx.float32],
-    )
-    return [
-        (
-            tokens[index : index + 1],
-            (
-                []
-                if sampler is None
-                else bg.SparseDraftQ(candidates[index], logq[index], vocab)
-            ),
-        )
-        for index, sampler in enumerate(samplers)
-    ]
-
-
-def _q_arrays(accept_lps) -> list:
-    if isinstance(accept_lps, bg.SparseDraftQ):
-        return accept_lps.arrays()
-    return list(accept_lps)
-
-
-def _select_sampled(selector, hidden, logits, anchors, samplers) -> list[tuple]:
-    """DFlash2 selector path with per-row sampling over the candidate set.
-
-    Mirrors ``CandidateSelector.select``: top-k candidates per position, a
-    predecessor/successor edge score, then the next predecessor is the
-    chosen token. Sampled rows draw from their sampler's filters over the
-    candidate scores and expose that sparse distribution as q.
-    """
-    batch, length, vocab = logits.shape
-    candidates = top_k_indices(logits, selector.top_k)
-    unary = mx.take_along_axis(logits, candidates, axis=-1)
-    projected = selector.hidden_projection(hidden)
-    predecessor = anchors.reshape(-1)
-    tokens = [[] for _ in range(batch)]
-    densities = [[] for _ in range(batch)]
-    for position in range(length):
-        edges = mx.sum(
-            selector.predecessor_codebook(predecessor)[:, None]
-            * projected[:, position, None]
-            * selector.successor_codebook(candidates[:, position]),
-            axis=-1,
-        )
-        scores = unary[:, position] + edges  # (batch, top_k)
-        chosen = []
-        for index, sampler in enumerate(samplers):
-            if sampler is None:
-                pick = mx.argmax(scores[index], keepdims=True)
-            else:
-                pick, density = _sample_candidates(scores[index : index + 1], sampler)
-                densities[index].append(density)
-            token = candidates[index, position][pick]
-            chosen.append(token.reshape(1))
-            tokens[index].append(token.reshape(1))
-        predecessor = mx.concatenate(chosen).astype(mx.int32)
-    accept = [[] for _ in range(batch)]
-    for index in range(batch):
-        if not densities[index]:
-            continue
-        rows = mx.concatenate(densities[index])  # (length, top_k)
-        q = mx.full((length, vocab), -float("inf"), dtype=mx.float32)
-        q = mx.put_along_axis(q, candidates[index], rows, axis=-1)
-        accept[index] = [q[position] for position in range(length)]
-    return [
-        (mx.concatenate(tokens[index])[None].astype(mx.int32), accept[index])
-        for index in range(batch)
-    ]
-
-
-def resolve_block_size(
-    model: nn.Module, requested: int | None, max_rows: int | None = None
-) -> int:
-    """Clamp the block (anchor + proposals) to what Lightning MTP verifies.
-
-    ``max_rows`` is the target's own verify limit, when it has one.
-    """
-    trained = int(getattr(model.config, "block_size", 0) or 0)
-    block = int(requested or trained or 0)
-    if block <= 1:
-        raise ValueError("DFlash block size must cover the anchor and one proposal")
-    limit = MAX_LIGHTNING_MTP_DRAFT_TOKENS + 1
-    if max_rows:
-        limit = min(limit, int(max_rows))
-    if trained and block > trained:
-        block = trained
-    return min(block, limit)
-
-
-def resolve_verify_mode(mode: str | None) -> bool:
-    """Whether ``dflash_verify_mode`` lets the verified part of a block adapt."""
-    if mode in (None, "adaptive"):
-        return True
-    if mode in ("dflash", "off"):
-        return False
-    if mode == "ddtree":
-        logger.info("DFlash ddtree verify is not supported; using adaptive")
-        return True
-    raise ValueError(f"unknown dflash_verify_mode {mode!r}")
-
-
-def quantize_drafter(model: nn.Module, *, bits: int, group_size: int) -> int:
-    """Affine-quantize the drafter's linear layers; returns the layer count."""
-    quantized = 0
-
-    def predicate(path: str, module: nn.Module) -> bool:
-        nonlocal quantized
-        if not isinstance(module, nn.Linear):
-            return False
-        if module.weight.shape[-1] % group_size:
-            return False
-        quantized += 1
-        return True
-
-    nn.quantize(model, group_size=group_size, bits=bits, class_predicate=predicate)
-    return quantized
-
-
-def _apply_partial_rope(model: nn.Module, config: dict) -> None:
-    """Rotate only the leading part of each head when the checkpoint says so.
-
-    mlx-vlm builds the drafter RoPE over the whole head and drops
-    ``partial_rotary_factor`` (Laguna, MiMo).
-    """
-    partial = float(config.get("partial_rotary_factor") or 1.0)
-    if partial >= 1.0:
-        return
-    scaling = config.get("rope_parameters") or config.get("rope_scaling")
-    base = config.get("rope_theta") or (scaling or {}).get("rope_theta")
-    model.rope = initialize_rope(
-        int(int(config["head_dim"]) * partial),
-        base=float(base),
-        traditional=False,
-        scaling_config=scaling,
-        max_position_embeddings=config.get("max_position_embeddings"),
-    )
-
-
-def load_dflash_drafter(
-    path: str,
-    target_model: Any,
-    *,
-    tokenizer: Any = None,
-    block_size: int | None = None,
-    quant_enabled: bool = False,
-    quant_bits: int = 4,
-    quant_group_size: int = 64,
-    verify_mode: str | None = None,
-) -> DFlashDrafter:
-    """Load a DFlash checkpoint through mlx-vlm and bind it to ``target_model``.
-
-    ``target_model`` is the mlx-vlm model whose ``language_model`` owns the
-    embeddings and lm_head the drafter borrows.
-    """
-    adaptive = resolve_verify_mode(verify_mode)
-    model, kind = load_drafter(path, kind="dflash")
-    if kind != "dflash":
-        raise ValueError(f"{path} resolved to drafter kind {kind!r}, expected 'dflash'")
-    if quant_enabled and not getattr(model.config, "quantization", None):
-        count = quantize_drafter(model, bits=quant_bits, group_size=quant_group_size)
-        logger.info(
-            "DFlash drafter quantized: %d linear layers at %d bits (group %d)",
-            count,
-            quant_bits,
-            quant_group_size,
-        )
-    config = json.loads((get_model_path(path) / "config.json").read_text())
-    _apply_partial_rope(model, config)
-    # Laguna checks the target vocabulary through the tokenizer when the
-    # target (an mlx-lm model) carries no config.
-    if (
-        tokenizer is not None
-        and "tokenizer" in inspect.signature(model.bind).parameters
-    ):
-        model.bind(target_model, tokenizer=tokenizer)
-    else:
-        model.bind(target_model)
-    language_model = getattr(target_model, "language_model", target_model)
-    block = resolve_block_size(
-        model,
-        block_size,
-        getattr(language_model, "_omlx_mtp_max_verify_rows", None),
-    )
-    mx.eval(model.parameters())
-    if qwen35_packed_linear.enabled(target_model):
-        packed = qwen35_packed_linear.pack_drafter(model)
-        logger.info("DFlash drafter packed 4-bit projections: %d layers", packed)
-    drafter = DFlashDrafter(
-        model,
-        block_size=block,
-        source_path=path,
-        adaptive=adaptive,
-    )
-    logger.info(
-        "DFlash drafter loaded: path=%s kind=%s block=%d adaptive=%s target_layers=%s",
-        path,
-        drafter.kind,
-        block,
-        drafter.adaptive,
-        drafter.target_layer_ids,
-    )
-    return drafter
-
-
-def attach_drafter(language_model: Any, drafter: DFlashDrafter) -> None:
-    """Expose the drafter to Lightning MTP through the language model markers."""
-    language_model._omlx_drafter = drafter
-    language_model._omlx_mtp_decode_enabled = True
-    language_model._omlx_mtp_multi_request = not getattr(
-        language_model, "_omlx_drafter_single_row", False
-    )
-    language_model._omlx_mtp_batch_rollback = True
-    language_model._omlx_mtp_chain = True
-    language_model._omlx_mtp_depth = drafter.depth
-    language_model._omlx_mtp_head_clone = False
-
-
-def detach_drafter(language_model: Any) -> DFlashDrafter | None:
-    drafter = getattr(language_model, "_omlx_drafter", None)
-    if drafter is None:
-        return None
-    drafter.clear()
-    language_model._omlx_drafter = None
-    language_model._omlx_mtp_decode_enabled = False
-    return drafter

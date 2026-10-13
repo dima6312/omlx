@@ -75,6 +75,7 @@ from .model_settings import (
 from .patches.qwen35_yarn import yarn_factor
 from .scheduler import SchedulerConfig
 from .settings import get_settings as get_global_settings
+from .speculative.dflash import load_dflash_drafter
 from .utils.fatal import exit_if_gpu_submissions_ignored
 from .utils.generation_config import SAMPLING_SETTING_KEYS, load_sampling_defaults
 from .utils.metal_sync import unreleased_graphics_bytes
@@ -4223,8 +4224,6 @@ class EnginePool:
                 drafter_path = drafter_entry.model_path if drafter_entry else drafter_id
 
                 def _load_dflash_sync(path: str = drafter_path):
-                    from .speculative.dflash_drafter import load_dflash_drafter
-
                     return load_dflash_drafter(
                         path,
                         engine.prepare_dflash_target(),
