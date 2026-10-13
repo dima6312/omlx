@@ -4402,12 +4402,14 @@ class Scheduler:
                     )
                     prefetch(input_arr[:, n_to_process : n_to_process + next_n], input_arr[:, :n_to_process])
                 prefill_model = getattr(self.model, "_omlx_prefill", self.model)
+                chunk_start = base_size + processed_tokens
                 capture_from = self._dflash_prefill_capture(
                     request,
                     prefill_model,
-                    base_size + processed_tokens,
+                    chunk_start,
                     n_to_process,
                     model_kwargs,
+                    first_chunk=processed_tokens == 0,
                 )
                 prefill_out = prefill_model(
                     input_arr[:, :n_to_process],
@@ -4415,7 +4417,9 @@ class Scheduler:
                     **model_kwargs,
                 )
                 if capture_from is not None:
-                    self._dflash_seed_prefill(request, prefill_out, capture_from)
+                    self._dflash_seed_prefill(
+                        request, prefill_out, capture_from, chunk_start + capture_from
+                    )
                 mx.eval([c.state for c in prompt_cache])
                 input_arr = input_arr[:, n_to_process:]
                 if embeds_array is not None:
@@ -5527,6 +5531,7 @@ class Scheduler:
         start: int,
         n_tokens: int,
         model_kwargs: dict,
+        first_chunk: bool = False,
     ) -> Optional[int]:
         """Request drafter layer captures for the chunk's tail inside the window.
 
@@ -5542,6 +5547,15 @@ class Scheduler:
         if drafter is None or prefill_owner is not self.model:
             return None
         keep_from = len(request.prompt_token_ids) - drafter.window
+        if (
+            first_chunk
+            and start > max(keep_from, 0)
+            and not getattr(request, "vlm_extra_keys_for_cache", None)
+        ):
+            # Cached tokens skip prefill; a finished request may have kept
+            # the drafter context for them. Tokens alone cannot tell media
+            # apart, so media requests keep no context.
+            drafter.prepare_request(request.request_id, request.prompt_token_ids, start)
         end = start + n_tokens
         if end <= keep_from:
             return None
@@ -5549,14 +5563,14 @@ class Scheduler:
         return max(0, keep_from - start)
 
     def _dflash_seed_prefill(
-        self, request: "Request", output: Any, keep_from: int
+        self, request: "Request", output: Any, keep_from: int, position: int
     ) -> None:
         drafter = _block_drafter_for(self.model)
         hidden = getattr(output, "hidden_states", None)
         if drafter is None or not hidden:
             return
         drafter.seed_request(
-            request.request_id, [layer[:, keep_from:] for layer in hidden]
+            request.request_id, [layer[:, keep_from:] for layer in hidden], position
         )
 
     def _dflash_bind_uid(self, request_id: str, uid: int) -> None:
@@ -6698,16 +6712,20 @@ class Scheduler:
         chunk_kwargs = {}
         if self._supports_skip_lm_head():
             chunk_kwargs["skip_lm_head"] = True
+        chunk_start = state.base_size + state.tokens_processed
         capture_from = self._dflash_prefill_capture(
             state.request,
             prefill_model,
-            state.base_size + state.tokens_processed,
+            chunk_start,
             n,
             chunk_kwargs,
+            first_chunk=state.tokens_processed == 0,
         )
         prefill_out = prefill_model(chunk, cache=state.cache, **chunk_kwargs)
         if capture_from is not None:
-            self._dflash_seed_prefill(state.request, prefill_out, capture_from)
+            self._dflash_seed_prefill(
+                state.request, prefill_out, capture_from, chunk_start + capture_from
+            )
         mx.eval([c.state for c in state.cache])
 
     def _forward_packed_prefill(self, plans: list[_PrefillChunkPlan]) -> None:
@@ -13454,10 +13472,21 @@ class Scheduler:
 
         for request_id in finished_ids:
             _mtp_priming.release_request(self.model, request_id)
+            request = self.running.get(request_id)
             finished_drafter = _block_drafter_for(self.model)
             if finished_drafter is not None:
-                finished_drafter.release_request(request_id)
-            request = self.running.get(request_id)
+                # The token list keeps the drafter context for prefix hits.
+                keep = request is not None and not getattr(
+                    request, "vlm_extra_keys_for_cache", None
+                )
+                finished_drafter.release_request(
+                    request_id,
+                    (
+                        list(request.prompt_token_ids) + list(request.output_token_ids)
+                        if keep
+                        else None
+                    ),
+                )
 
             # Store cache for future reuse (G2-async): submit to background
             # executor so the post-finish 28GB+ memcpy doesn't block response

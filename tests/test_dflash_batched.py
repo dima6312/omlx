@@ -260,12 +260,55 @@ def test_prefill_seed_binds_to_uid_and_window_slicing():
     )
 
     output = SimpleNamespace(hidden_states=_captured(15, seed=2))
-    Scheduler._dflash_seed_prefill(scheduler, request, output, keep)
+    Scheduler._dflash_seed_prefill(scheduler, request, output, keep, 10 + keep)
     assert drafter._request_seeds["r"][0].shape == (
         1,
         7,
         HIDDEN * len(TARGET_LAYER_IDS),
     )
+    assert drafter._request_starts["r"] == 18
+
+
+def _draft_one(drafter, uid, captured, anchor):
+    state = SimpleNamespace(uid=uid, drafts=None, draft_lps=None, draft_accept_lps=None)
+    drafter.draft([(None, state, captured, mx.array([anchor], dtype=mx.uint32), None)])
+    return state.drafts.tolist()
+
+
+def test_prefix_hit_restores_context_kept_from_finished_request():
+    """Cached tokens never reach the drafter; their projected context comes
+    from a finished request with the same tokens and drafts like the raw one."""
+    raw = _captured(12, seed=3)
+    rows = lambda lo, hi: [layer[:, lo:hi] for layer in raw]  # noqa: E731
+    tokens = list(range(50, 70))
+
+    drafter = _tiny_drafter()
+    drafter.seed_request("a", rows(0, 10), position=0)
+    drafter.bind_uid("a", 1)
+    _draft_one(drafter, 1, rows(10, 11), 5)
+    drafter.release([1])
+    drafter.release_request("a", tokens)
+
+    # Other prefixes, or a hit past the kept rows, restore nothing.
+    assert drafter.prepare_request("x", [0] * 9, 9) == 0
+    assert drafter.prepare_request("x", tokens, 12) == 0
+
+    scheduler = SimpleNamespace(model=SimpleNamespace(_omlx_drafter=drafter))
+    request = SimpleNamespace(prompt_token_ids=tokens[:9] + [1, 2, 3], request_id="b")
+    # The first chunk starts at the 9 cached tokens, inside the window.
+    Scheduler._dflash_prefill_capture(
+        scheduler, request, scheduler.model, 9, 2, {}, first_chunk=True
+    )
+    restored, start = drafter._request_restored["b"]
+    assert (start, restored.shape[1]) == (0, 9)
+    drafter.seed_request("b", rows(9, 11), position=9)
+    drafter.bind_uid("b", 2)
+    assert drafter._rows[2].end == 11
+    restored_drafts = _draft_one(drafter, 2, rows(11, 12), 7)
+
+    reference = _tiny_drafter()
+    reference.seed(9, rows(0, 11))
+    assert restored_drafts == _draft_one(reference, 9, rows(11, 12), 7)
 
 
 def test_sampled_rows_get_sparse_candidate_distributions():

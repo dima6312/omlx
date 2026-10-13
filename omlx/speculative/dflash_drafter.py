@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from collections import OrderedDict
 from collections.abc import Iterable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -34,6 +35,11 @@ from ..patches.qwen35_verify_qmm import set_verify_qmm_armed
 from ..utils.sampling import top_k_indices
 
 logger = logging.getLogger(__name__)
+
+# Finished requests whose drafter context stays available for prefix hits.
+_KEPT_REQUESTS = 8
+# Released rows waiting for the scheduler to name their tokens.
+_RELEASED_ROWS = 32
 
 
 @dataclass
@@ -52,6 +58,24 @@ class _RowContext:
     keys: list[mx.array] | None = None
     values: list[mx.array] | None = None
     pos: mx.array | None = None
+    # Absolute prompt position after the newest queued context row, or None
+    # while the request's first position is unknown.
+    end: int | None = None
+    # Context restored for a prefix-cache hit, already projected by ``fc``
+    # and ``hidden_norm``; it precedes ``pending``.
+    restored: mx.array | None = None
+    # The newest fed rows after projection, as chunks, oldest first.
+    history: list[mx.array] = field(default_factory=list)
+    history_len: int = 0
+
+
+@dataclass
+class _KeptContext:
+    """Projected context of a finished request, for its prefix-cache hits."""
+
+    tokens: list[int]
+    context: mx.array
+    end: int
 
 
 @dataclass
@@ -75,6 +99,7 @@ class _Predraft:
     bases: list[int]
     unfed: list[int]
     proposals: list[tuple]
+    contexts: list[mx.array] = field(default_factory=list)
 
 
 # ``_grouped_dynamic_convolve`` for one of the two kernel sets in
@@ -194,6 +219,13 @@ class DFlashDrafter:
         # Prefill captures wait under the request id until the scheduler
         # learns the row uid at insert time.
         self._request_seeds: dict[str, list[mx.array]] = {}
+        self._request_starts: dict[str, int] = {}
+        self._request_restored: dict[str, tuple[mx.array, int]] = {}
+        self._request_uids: dict[str, Any] = {}
+        # Contexts of rows the batch released, until the scheduler names
+        # their tokens, and of finished requests kept for prefix hits.
+        self._released: OrderedDict[Any, tuple[list[mx.array], int]] = OrderedDict()
+        self._kept: OrderedDict[str, _KeptContext] = OrderedDict()
         # Row order of the generation batch whose ordinary decode step is
         # running, so a plain forward can be attributed to rows.
         self.scope_uids: tuple | None = None
@@ -234,13 +266,27 @@ class DFlashDrafter:
         """Queue prefill captures ``[(1, n, H), ...]`` as context for ``uid``."""
         if captured:
             row = self._row(uid)
-            row.pending.append(_concat_captured(captured))
+            self._queue(row, _concat_captured(captured))
             self._bound_pending(row)
+
+    @staticmethod
+    def _queue(row: _RowContext, context: mx.array) -> None:
+        row.pending.append(context)
+        if row.end is not None:
+            row.end += int(context.shape[1])
 
     def _bound_pending(self, row: _RowContext) -> None:
         # Only the newest ring_slots rows are ever attended, so rows queued
         # while drafting is off are dropped here; fed still counts them.
         drop = sum(int(p.shape[1]) for p in row.pending) - self.ring_slots
+        if row.restored is not None:
+            drop += int(row.restored.shape[1])
+            older = min(drop, int(row.restored.shape[1]))
+            if older > 0:
+                row.fed += older
+                drop -= older
+                kept = row.restored[:, older:]
+                row.restored = kept if int(kept.shape[1]) else None
         if drop <= 0:
             return
         row.fed += drop
@@ -260,22 +306,97 @@ class DFlashDrafter:
         for index, uid in enumerate(uids):
             self.seed(uid, [layer[index : index + 1] for layer in captured])
 
-    def seed_request(self, request_id: str, captured: Sequence[mx.array]) -> None:
-        """Queue prefill captures for a request that has no row uid yet."""
+    def seed_request(
+        self,
+        request_id: str,
+        captured: Sequence[mx.array],
+        position: int | None = None,
+    ) -> None:
+        """Queue prefill captures for a request that has no row uid yet.
+
+        ``position`` is the prompt position of the first captured row.
+        """
         if captured:
             self._request_seeds.setdefault(request_id, []).append(
                 _concat_captured(captured)
             )
+            if position is not None:
+                self._request_starts.setdefault(request_id, int(position))
+
+    def prepare_request(
+        self, request_id: str, prompt_tokens: Sequence[int], cached: int
+    ) -> int:
+        """Restore the context of a prefix-cache hit from a finished request.
+
+        Cached tokens skip prefill, so the drafter never sees their layer
+        captures. A kept request whose tokens match the first ``cached``
+        prompt tokens supplies the rows just before ``cached``. Returns the
+        number of restored rows.
+        """
+        cached = int(cached)
+        if cached <= 0:
+            return 0
+        prefix = list(prompt_tokens[:cached])
+        for key in reversed(self._kept):
+            kept = self._kept[key]
+            start = kept.end - int(kept.context.shape[1])
+            if not start < cached <= kept.end or kept.tokens[:cached] != prefix:
+                continue
+            take = min(self.ring_slots, cached - start)
+            offset = cached - start
+            self._request_restored[request_id] = (
+                kept.context[:, offset - take : offset],
+                cached - take,
+            )
+            self._kept.move_to_end(key)
+            return take
+        return 0
 
     def bind_uid(self, request_id: str, uid: Any) -> None:
+        self._request_uids[request_id] = uid
+        restored = self._request_restored.pop(request_id, None)
+        start = self._request_starts.pop(request_id, None)
         seeds = self._request_seeds.pop(request_id, None)
-        if seeds:
-            row = self._row(uid)
-            row.pending.extend(seeds)
-            self._bound_pending(row)
+        if restored is None and not seeds:
+            return
+        row = self._row(uid)
+        if restored is not None:
+            row.restored, start = restored
+            row.end = start + int(row.restored.shape[1])
+        else:
+            row.end = start
+        for seed in seeds or ():
+            self._queue(row, seed)
+        self._bound_pending(row)
 
-    def release_request(self, request_id: str) -> None:
+    def release_request(
+        self, request_id: str, tokens: Sequence[int] | None = None
+    ) -> None:
+        """Forget a request; with its ``tokens``, keep its context for hits."""
         self._request_seeds.pop(request_id, None)
+        self._request_starts.pop(request_id, None)
+        self._request_restored.pop(request_id, None)
+        uid = self._request_uids.pop(request_id, None)
+        if tokens is None or uid is None:
+            return
+        row = self._rows.get(uid)
+        if row is not None:
+            released = (row.history, row.end) if row.history else None
+        else:
+            released = self._released.pop(uid, None)
+        if released is None:
+            return
+        history, end = released
+        if end is None or end > len(tokens):
+            return
+        context = history[0] if len(history) == 1 else mx.concatenate(history, axis=1)
+        self._kept[request_id] = _KeptContext(
+            tokens=list(tokens[:end]),
+            context=context[:, -self.ring_slots :],
+            end=end,
+        )
+        while len(self._kept) > _KEPT_REQUESTS:
+            self._kept.popitem(last=False)
 
     @contextmanager
     def decode_scope(self, uids: Iterable[Any]):
@@ -289,14 +410,34 @@ class DFlashDrafter:
     def release(self, uids: Iterable[Any]) -> None:
         self._predraft = None
         for uid in uids:
-            if self._rows.pop(uid, None) is not None:
-                self._detach_cohort()
+            row = self._rows.pop(uid, None)
+            if row is None:
+                continue
+            self._detach_cohort()
+            if row.history and row.end is not None:
+                self._released[uid] = (row.history, row.end)
+                while len(self._released) > _RELEASED_ROWS:
+                    self._released.popitem(last=False)
 
     def clear(self) -> None:
         self._predraft = None
         self._rows.clear()
         self._cohort = None
         self._request_seeds.clear()
+        self._request_starts.clear()
+        self._request_restored.clear()
+        self._request_uids.clear()
+        self._released.clear()
+        self._kept.clear()
+
+    def _remember(self, row: _RowContext, context: mx.array) -> None:
+        """Keep the newest ring_slots projected rows of a fed context."""
+        if row.end is None or not int(context.shape[1]):
+            return
+        row.history.append(context)
+        row.history_len += int(context.shape[1])
+        while row.history_len - int(row.history[0].shape[1]) >= self.ring_slots:
+            row.history_len -= int(row.history.pop(0).shape[1])
 
     def context_length(self, uid: Any) -> int:
         row = self._rows.get(uid)
@@ -315,7 +456,7 @@ class DFlashDrafter:
         for gen_batch, state, captured, committed, _prev_buf in jobs:
             row = self._row(state.uid)
             if captured:
-                row.pending.append(_concat_captured(captured))
+                self._queue(row, _concat_captured(captured))
             if not row.pending:
                 raise RuntimeError(
                     f"DFlash drafter has no context for uid={state.uid!r}"
@@ -365,6 +506,8 @@ class DFlashDrafter:
         if not captured:
             return False
         row = self._row(state.uid)
+        if row.restored is not None:
+            return False
         unfed = sum(int(p.shape[1]) for p in row.pending)
         context = mx.concatenate([*row.pending, _concat_captured(captured)], axis=1)
         if int(context.shape[1]) > self.ring_slots:
@@ -397,6 +540,9 @@ class DFlashDrafter:
         row = self._row(state.uid)
         row.fed = pre.bases[0] + pre.unfed[0] + int(count)
         row.pending = []
+        if row.end is not None:
+            row.end += int(count)
+        self._remember(row, pre.contexts[0][:, : pre.unfed[0] + int(count)])
         tokens, accept_lps = pre.proposals[0]
         state.drafts = tokens.reshape(-1).astype(mx.uint32)
         state.draft_lps = []
@@ -482,16 +628,27 @@ class DFlashDrafter:
             dtype = model.fc.scales.dtype
 
         # Context segments: keep at most ``slots`` newest tokens per row and
-        # count the rest as skipped so absolute positions stay aligned.
-        segments, lengths, bases = [], [], []
+        # count the rest as skipped so absolute positions stay aligned. A
+        # restored context precedes the captures and is already projected.
+        segments, restored, lengths, bases = [], [], [], []
         for _state, row, context, _anchor, _sampler in rows:
-            skip = max(0, int(context.shape[1]) - slots)
-            if skip:
-                context = context[:, skip:]
+            prior = row.restored if commit else None
+            if commit:
+                row.restored = None
+            held = 0 if prior is None else int(prior.shape[1])
+            skip = max(0, held + int(context.shape[1]) - slots)
+            if skip >= held:
+                prior = None
+                context = context[:, skip - held :]
+            elif skip:
+                prior = prior[:, skip:]
             segments.append(context)
-            lengths.append(int(context.shape[1]))
+            restored.append(prior)
+            lengths.append(
+                int(context.shape[1]) + (0 if prior is None else int(prior.shape[1]))
+            )
             bases.append(row.fed + skip)
-        width = max(lengths)
+        width = max(int(seg.shape[1]) for seg in segments)
         padded = mx.concatenate(
             [
                 (
@@ -512,6 +669,20 @@ class DFlashDrafter:
             axis=0,
         )
         h_ctx = model.hidden_norm(model.fc(padded))
+        if any(prior is not None for prior in restored):
+            width = max(lengths)
+            parts = []
+            for index, (prior, seg) in enumerate(zip(restored, segments)):
+                part = h_ctx[index : index + 1, : int(seg.shape[1])]
+                if prior is not None:
+                    part = mx.concatenate([prior.astype(part.dtype), part], axis=1)
+                if int(part.shape[1]) < width:
+                    pad = mx.zeros(
+                        (1, width - int(part.shape[1]), part.shape[2]), dtype=part.dtype
+                    )
+                    part = mx.concatenate([part, pad], axis=1)
+                parts.append(part)
+            h_ctx = mx.concatenate(parts, axis=0)
 
         anchors = mx.concatenate([anchor for _, _, _, anchor, _ in rows]).astype(
             mx.int32
@@ -619,10 +790,11 @@ class DFlashDrafter:
             cohort.keys = new_keys
             cohort.values = new_values
             cohort.pos = pos
-            for (_state, row, _context, _anchor, _sampler), b, n in zip(
-                rows, bases, lengths
+            for index, ((_state, row, *_), b, n) in enumerate(
+                zip(rows, bases, lengths)
             ):
                 row.fed = b + n
+                self._remember(row, h_ctx[index : index + 1, :n])
 
         draft_hidden = model.norm(h)[:, 1:]
         logits = model._logits(draft_hidden)
@@ -653,6 +825,7 @@ class DFlashDrafter:
                 bases=bases,
                 unfed=[],
                 proposals=proposals,
+                contexts=[h_ctx[i : i + 1, :n] for i, n in enumerate(lengths)],
             )
         return proposals
 
