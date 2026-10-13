@@ -281,10 +281,12 @@ def drop_ctx(model: Any) -> None:
 def _host_eligible(host: Any) -> bool:
     get_mtp = getattr(host, "get_mtp_module", None)
     mtp = get_mtp() if callable(get_mtp) else getattr(host, "mtp", None)
+    # An attached block drafter replaces the head, which then never drafts.
     return (
         getattr(host, "_omlx_mtp_decode_enabled", False) is True
         and getattr(host, "_omlx_mtp_chain", False) is True
         and mtp is not None
+        and getattr(host, "_omlx_drafter", None) is None
     )
 
 

@@ -945,13 +945,20 @@ def _select_sampled(selector, hidden, logits, anchors, samplers) -> list[tuple]:
     ]
 
 
-def resolve_block_size(model: nn.Module, requested: int | None) -> int:
-    """Clamp the block (anchor + proposals) to what Lightning MTP verifies."""
+def resolve_block_size(
+    model: nn.Module, requested: int | None, max_rows: int | None = None
+) -> int:
+    """Clamp the block (anchor + proposals) to what Lightning MTP verifies.
+
+    ``max_rows`` is the target's own verify limit, when it has one.
+    """
     trained = int(getattr(model.config, "block_size", 0) or 0)
     block = int(requested or trained or 0)
     if block <= 1:
         raise ValueError("DFlash block size must cover the anchor and one proposal")
     limit = MAX_LIGHTNING_MTP_DRAFT_TOKENS + 1
+    if max_rows:
+        limit = min(limit, int(max_rows))
     if trained and block > trained:
         block = trained
     return min(block, limit)
@@ -1014,7 +1021,12 @@ def load_dflash_drafter(
             quant_group_size,
         )
     model.bind(target_model)
-    block = resolve_block_size(model, block_size)
+    language_model = getattr(target_model, "language_model", target_model)
+    block = resolve_block_size(
+        model,
+        block_size,
+        getattr(language_model, "_omlx_mtp_max_verify_rows", None),
+    )
     mx.eval(model.parameters())
     if qwen35_packed_linear.enabled(target_model):
         packed = qwen35_packed_linear.pack_drafter(model)

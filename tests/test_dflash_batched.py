@@ -426,6 +426,8 @@ def test_resolve_block_size_clamps_to_trained_block_and_mtp_limit():
     assert dd.resolve_block_size(model, 16) == 8
     model.config.block_size = 16
     assert dd.resolve_block_size(model, None) == dd.MAX_LIGHTNING_MTP_DRAFT_TOKENS + 1
+    # GLM-5.3's pooling undo log bounds a verify block at 8 rows.
+    assert dd.resolve_block_size(model, None, max_rows=8) == 8
     with pytest.raises(ValueError):
         dd.resolve_block_size(model, 1)
 

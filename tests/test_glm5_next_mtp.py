@@ -31,14 +31,19 @@ from pathlib import Path
 from types import MethodType, SimpleNamespace
 
 from mlx.utils import tree_flatten
+from mlx_vlm.models.cache import ArraysCache
 from mlx_vlm.models.glm5_next import language
+from mlx_vlm.speculative.drafters.dflash2.config import DFlash2Config
+from mlx_vlm.speculative.drafters.dflash2.dflash2 import DFlash2DraftModel
 
+from omlx.patches import mlx_lm_mtp
 from omlx.patches.mlx_lm_mtp import batch_generator as bg
 from omlx.patches.mlx_lm_mtp import batched_head
 from omlx.patches.mlx_lm_mtp import prompt_priming as pp
 from omlx.patches.mlx_vlm_glm5_next_compat import decode_kernels as dk
 from omlx.patches.mlx_vlm_mtp import glm5_next_vlm_runtime  # noqa: E402
 from omlx.patches.mlx_vlm_mtp.glm5_next_batch_rollback import rollback_rows
+from omlx.speculative import dflash_drafter as dd
 
 N_MAIN = 45
 N_MTP = 1
@@ -657,6 +662,12 @@ def test_verify_compiled_ffn_matches_eager(applied, config, layer_idx, width):
     mx.eval(expected)
 
     layer.compile_ffn = True
+    if width > 1:
+        # Each verify shape runs eagerly once to prime kernel self-checks.
+        primed = layer(x, gdn_sink=[])
+        mx.eval(primed)
+        assert layer._ffn_c is None
+        assert mx.array_equal(primed, expected).item()
     compiled_sink = []
     actual = layer(x, gdn_sink=compiled_sink)
     mx.eval(actual)
@@ -1713,3 +1724,151 @@ def _stock_verify_router(fused):
 @pytest.fixture(autouse=True)
 def _pin_verify_router(monkeypatch):
     monkeypatch.setattr(dk, "moe_router", _stock_verify_router(dk.moe_router))
+
+
+@pytest.mark.usefixtures("glm5_fused_decode")
+def test_drafter_captures_are_layer_outputs_in_requested_order(monkeypatch):
+    """Prefill, verify and deferred one-token decode capture each requested
+    layer's HC-averaged output without changing logits."""
+    _, language = _runtime()
+    model = _model(3, KDA_BITS["8-bit/5-bit"])
+    wanted = [2, 0]
+    prompt = mx.random.randint(0, VOCAB, (1, 300), key=mx.random.key(3))
+    block = mx.array([[5, 6, 7, 8]])
+    step = mx.array([[9]])
+    observed = []
+
+    def run(capture):
+        cache = model.make_cache()
+        kwargs = {"capture_layer_ids": wanted} if capture else {}
+        prefill = model(prompt, cache=cache, **kwargs)
+        verify = model(block, cache=cache, return_hidden=True, **kwargs)
+        model.rollback_speculative_cache(cache, verify.gdn_states, 3, 4)
+        model._omlx_drafter = (
+            SimpleNamespace(
+                scope_uids=(7,),
+                target_layer_ids=wanted,
+                observe=lambda uids, caps: observed.append((uids, caps)),
+            )
+            if capture
+            else None
+        )
+        try:
+            decode = model(step, cache=cache)
+        finally:
+            model._omlx_drafter = None
+        mx.eval(prefill.logits, verify.logits, decode.logits)
+        return prefill, verify, decode
+
+    recorded = []
+    call = language.Glm5NextDecoderLayer.__call__
+
+    def record(self, x, *args, **kwargs):
+        out = call(self, x, *args, **kwargs)
+        full = out.materialize() if isinstance(out, language._HCDeferred) else out
+        recorded.append(full.mean(axis=2))
+        return out
+
+    monkeypatch.setattr(language.Glm5NextDecoderLayer, "__call__", record)
+    reference = run(capture=False)
+    monkeypatch.setattr(language.Glm5NextDecoderLayer, "__call__", call)
+    captured = run(capture=True)
+
+    layers = len(model.model.layers)
+    per_call = [recorded[i * layers : (i + 1) * layers] for i in range(3)]
+    for ref, got in zip(reference, captured):
+        assert _bitwise_equal(got.logits, ref.logits)
+    prefill, verify, _ = captured
+    assert len(prefill.hidden_states) == len(wanted)
+    for got, layer in zip(prefill.hidden_states, wanted):
+        assert _bitwise_equal(got, per_call[0][layer])
+    # Verify returns the captures, then the head's pre-norm hidden.
+    assert len(verify.hidden_states) == len(wanted) + 1
+    for got, layer in zip(verify.hidden_states, wanted):
+        assert _bitwise_equal(got, per_call[1][layer])
+    assert _bitwise_equal(verify.hidden_states[-1], reference[1].hidden_states[-1])
+    [(uids, caps)] = observed
+    assert uids == (7,)
+    assert [tuple(c.shape) for c in caps] == [(1, 1, 1024)] * len(wanted)
+    for got, layer in zip(caps, wanted):
+        assert _bitwise_equal(got, per_call[2][layer])
+
+
+def _glm_drafter(target, seed):
+    config = DFlash2Config.from_dict(
+        {
+            "model_type": "qwen3",
+            "hidden_size": 1024,
+            "intermediate_size": 512,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 4,
+            "head_dim": 128,
+            "vocab_size": VOCAB,
+            "rms_norm_eps": 1e-6,
+            "max_position_embeddings": 4096,
+            "num_target_layers": len(target.model.layers),
+            "sliding_window": 64,
+            "layer_types": ["sliding_attention"],
+            "rope_parameters": {"rope_theta": 10000.0, "rope_type": "default"},
+            "tie_word_embeddings": False,
+            "dflash_config": {
+                "block_size": 4,
+                "conv_group_size": 8,
+                "conv_kernel_size": 2,
+                "mask_token_id": VOCAB - 1,
+                "selector_rank": 8,
+                "selector_top_k": 4,
+                "target_layer_ids": [0, 2, 3],
+            },
+        }
+    )
+    mx.random.seed(seed)
+    draft = DFlash2DraftModel(config)
+    draft.load_weights(
+        [
+            (key, mx.random.normal(value.shape) * 0.02)
+            for key, value in tree_flatten(draft.parameters())
+        ],
+        strict=False,
+    )
+    draft.bind(SimpleNamespace(language_model=target))
+    mx.eval(draft.parameters())
+    return dd.DFlashDrafter(draft, block_size=4, source_path="tiny")
+
+
+@pytest.mark.usefixtures("glm5_fused_decode")
+def test_block_drafter_generation_matches_plain_decode(monkeypatch):
+    """GLM-5.3 runs a DFlash block drafter through the batched MTP loop:
+    multi-row verify blocks roll back and the tokens equal plain decode."""
+    _, language = _runtime()
+    assert bg.apply()
+    make_mask = ArraysCache.make_mask
+
+    def unpadded(self, n):
+        pad = self.left_padding
+        if pad is not None and self.lengths is None and pad.size == 1 and pad.item() <= 0:
+            return None
+        return make_mask(self, n)
+
+    monkeypatch.setattr(ArraysCache, "make_mask", unpadded)
+    monkeypatch.setattr(mlx_lm_mtp, "_MTP_ACTIVE", True)
+    prompt = [
+        int(v) for v in mx.random.randint(0, VOCAB, (300,), key=mx.random.key(5)).tolist()
+    ]
+    plain = _generate(_model(5, KDA_BITS["8-bit/5-bit"]), prompt, 24, True, False)
+
+    model = _model(5, KDA_BITS["8-bit/5-bit"])
+    drafter = _glm_drafter(model, seed=9)
+    dd.attach_drafter(model, drafter)
+    widths = []
+    rollback = language.LanguageModel.rollback_speculative_cache
+
+    def counted(self, caches, gdn_states, accepted, block_size):
+        widths.append(int(block_size))
+        return rollback(self, caches, gdn_states, accepted, block_size)
+
+    monkeypatch.setattr(language.LanguageModel, "rollback_speculative_cache", counted)
+    drafted = _generate(model, prompt, 24, True, True)
+    assert drafted == plain
+    assert 4 in widths, widths

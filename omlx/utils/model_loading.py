@@ -1313,14 +1313,14 @@ def _checkpoint_has_mtp_weights(model_path: str | Path) -> bool:
     return _checkpoint_weight_prefix(Path(model_path) / "mtp", prefixes) is not None
 
 
-_DFLASH_BATCHED_MODEL_TYPES = ("qwen3_5", "qwen3_5_moe")
+_DFLASH_BATCHED_MODEL_TYPES = ("qwen3_5", "qwen3_5_moe", "glm5_next")
 
 
 def dflash_batched_supported(model_type: str | None, engine_type: str | None) -> bool:
     """True when DFlash runs as a block drafter inside the batched VLM engine.
 
-    Other DFlash targets (gemma4, laguna, muse, mlx-lm text loads) keep the
-    single-stream DFlashEngine.
+    Other DFlash targets (gemma4, laguna, mimo, muse, mlx-lm text loads) keep
+    the single-stream DFlashEngine.
     """
     return engine_type == "vlm" and model_type in _DFLASH_BATCHED_MODEL_TYPES
 

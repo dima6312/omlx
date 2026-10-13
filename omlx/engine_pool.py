@@ -3885,8 +3885,8 @@ class EnginePool:
                         entry.config_model_type, effective_type
                     )
                 ):
-                    # Qwen3.5-family VLM targets draft inside the batched
-                    # engine; the drafter is attached after start below.
+                    # Qwen3.5-family and GLM-5.3 VLM targets draft inside the
+                    # batched engine; the drafter is attached after start below.
                     logger.info(
                         "DFlash enabled for %s as a batched drafter, draft=%s",
                         model_id,

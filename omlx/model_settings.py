@@ -266,8 +266,8 @@ class ModelSettings:
         specprefill_draft_model: Path to draft model for SpecPrefill.
         specprefill_keep_pct: Keep rate for SpecPrefill (0.1–0.5).
         specprefill_threshold: Min tokens to trigger SpecPrefill.
-        dflash_enabled: Enable DFlash speculative decoding. Qwen3.5-family VLM
-            targets draft inside the batched engine (Lightning MTP verify path
+        dflash_enabled: Enable DFlash speculative decoding. Qwen3.5-family and
+            GLM-5.3 VLM targets draft inside the batched engine (Lightning MTP verify path
             with greedy or sampled acceptance, continuous batching); other
             targets use the single-stream DFlash engine, which alone honours
             the max_ctx, cache, window and sink settings below.
