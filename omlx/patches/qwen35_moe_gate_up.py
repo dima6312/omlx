@@ -60,9 +60,11 @@ _CALL_PATCHED = False
 
 # Loaded model classes whose module path marks a supported SwitchGLU family:
 # mlx-lm Qwen3.5/3.6 and HyV3, Qwen4-Exp's inherited SwitchGLU, the oMLX
-# single-checkpoint MTP wrapper, and the vendored Laguna module.
+# single-checkpoint MTP wrapper, the vendored Laguna module, and MiniCPM-V
+# 4.7, whose language model is the mlx-vlm Qwen3.5 MoE trunk.
 _FAMILY_TOKENS = (
     "qwen3_5",
+    "minicpmv4_7",
     "qwen3_6",
     "qwen35",
     "qwen4_exp",

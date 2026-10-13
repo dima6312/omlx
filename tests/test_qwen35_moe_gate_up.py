@@ -35,6 +35,13 @@ class _FakeOtherModel:
 _FakeOtherModel.__module__ = "mlx_lm.models.deepseek_v3"
 
 
+class _FakeMiniCPMModel:
+    pass
+
+
+_FakeMiniCPMModel.__module__ = "mlx_vlm.models.minicpmv4_7.minicpmv4_7"
+
+
 class _FakeHyV3Model:
     pass
 
@@ -184,6 +191,13 @@ def test_hy_v3_family_fused_bit_exact(bits):
 
 def test_qwen4_exp_family_is_eligible_for_gate_up_fusion():
     model = _make_model(model_cls=_FakeQwen4Model, n_blocks=1)
+
+    assert apply_qwen35_moe_gate_up_fusion(model) == 1
+    assert hasattr(model.blocks[0], "gate_up_proj")
+
+
+def test_minicpm_v4_7_family_is_eligible_for_gate_up_fusion():
+    model = _make_model(model_cls=_FakeMiniCPMModel, n_blocks=1)
 
     assert apply_qwen35_moe_gate_up_fusion(model) == 1
     assert hasattr(model.blocks[0], "gate_up_proj")
