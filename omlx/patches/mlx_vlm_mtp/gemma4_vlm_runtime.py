@@ -181,6 +181,9 @@ def _patch_vlm_language_model(g4_lang: Any) -> None:
         from ..mlx_lm_mtp import get_mtp_depth, is_mtp_active, is_mtp_depth_fixed
 
         original_init(self, config)
+        # A block drafter speculates for single rows only: a ragged accept
+        # cannot roll back the batched sliding-window (rotating) caches.
+        self._omlx_drafter_single_row = True
         asst_cfg = getattr(config, "mtp_assistant_config", None)
         attach = bool(asst_cfg) and bool(is_mtp_attach_enabled())
         self._omlx_mtp_decode_enabled = bool(attach and is_mtp_active())
@@ -206,6 +209,9 @@ def _patch_vlm_language_model(g4_lang: Any) -> None:
         has no SSM state) routes ``_chain_rollback`` to the stock
         ``rollback_speculative_cache``.
         """
+        drafter = getattr(self, "_omlx_drafter", None)
+        if drafter is not None:
+            return _drafter_call(self, drafter, inputs, inputs_embeds, mask, cache, kwargs)
         return_hidden = bool(kwargs.get("return_hidden", False))
         if not (return_hidden and getattr(self, "_omlx_mtp_decode_enabled", False)):
             return original_call(self, inputs, inputs_embeds, mask, cache, **kwargs)
@@ -234,6 +240,56 @@ def _patch_vlm_language_model(g4_lang: Any) -> None:
             hidden_states=out.hidden_states,
             gdn_states=[],
             shared_kv_states=sink,
+        )
+
+    def _drafter_call(self, drafter, inputs, inputs_embeds, mask, cache, kwargs):
+        """Backbone forward with a DFlash block drafter attached.
+
+        A verify forward returns the drafter's layer captures followed by
+        the last layer's hidden. An ordinary decode step feeds the drafter.
+        ``gdn_states=[]`` (no recurrent state) routes rollback to the stock
+        ``rollback_speculative_cache``.
+        """
+        return_hidden = kwargs.pop("return_hidden", False)
+        kwargs.pop("n_confirmed", None)
+        if not return_hidden:
+            scope = drafter.scope_uids
+            if (
+                scope
+                and inputs is not None
+                and inputs.ndim == 2
+                and tuple(inputs.shape) == (len(scope), 1)
+                and kwargs.get("capture_layer_ids") is None
+            ):
+                out = original_call(
+                    self,
+                    inputs,
+                    inputs_embeds,
+                    mask,
+                    cache,
+                    capture_layer_ids=list(drafter.target_layer_ids),
+                    **kwargs,
+                )
+                drafter.observe(scope, out.hidden_states)
+                return out
+            return original_call(self, inputs, inputs_embeds, mask, cache, **kwargs)
+        requested = list(kwargs.pop("capture_layer_ids", None) or [])
+        last = len(self.model.layers) - 1
+        layer_ids = sorted({*requested, last})
+        out = original_call(
+            self,
+            inputs,
+            inputs_embeds,
+            mask,
+            cache,
+            capture_layer_ids=layer_ids,
+            **kwargs,
+        )
+        by_layer = dict(zip(layer_ids, out.hidden_states))
+        return LanguageModelOutput(
+            logits=out.logits,
+            hidden_states=[by_layer[i] for i in requested] + [by_layer[last]],
+            gdn_states=[],
         )
 
     def _mtp_query_position(self) -> int:

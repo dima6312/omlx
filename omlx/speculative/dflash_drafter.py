@@ -1225,7 +1225,9 @@ def attach_drafter(language_model: Any, drafter: DFlashDrafter) -> None:
     """Expose the drafter to Lightning MTP through the language model markers."""
     language_model._omlx_drafter = drafter
     language_model._omlx_mtp_decode_enabled = True
-    language_model._omlx_mtp_multi_request = True
+    language_model._omlx_mtp_multi_request = not getattr(
+        language_model, "_omlx_drafter_single_row", False
+    )
     language_model._omlx_mtp_batch_rollback = True
     language_model._omlx_mtp_chain = True
     language_model._omlx_mtp_depth = drafter.depth

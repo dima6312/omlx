@@ -20,6 +20,7 @@ pytest.importorskip("mlx_vlm.models.gemma4_unified")
 
 from omlx.patches import mlx_lm_mtp as lm_mtp
 from omlx.patches.mlx_vlm_mtp import gemma4_vlm_runtime, set_mtp_attach_enabled
+from omlx.speculative.dflash_drafter import attach_drafter
 
 TINY_ASSISTANT_CONFIG = {
     "model_type": "gemma4_assistant",
@@ -239,3 +240,35 @@ def test_mtp_forward_requires_shared_kv_stash():
     lm._omlx_mtp_shared_kv = None
     with pytest.raises(RuntimeError, match="shared K/V stash"):
         lm.mtp_forward(mx.zeros((1, 1, 24)), mx.zeros((1, 1), dtype=mx.uint32), [])
+
+
+def test_block_drafter_captures_requested_layers_then_the_last():
+    """A verify returns the drafter's captures in request order and the last
+    layer's hidden; a decode step feeds the drafter; rows speculate alone."""
+    lm = _language_model(_text_config())
+    mx.eval(lm.parameters())
+    tokens = mx.array([[1, 2, 3, 4]])
+    plain = lm(tokens, cache=lm.make_cache(), capture_layer_ids=[0, 1])
+    observed = []
+    drafter = SimpleNamespace(
+        depth=3,
+        target_layer_ids=[1, 0],
+        scope_uids=None,
+        observe=lambda uids, caps: observed.append((uids, caps)),
+    )
+    attach_drafter(lm, drafter)
+    assert lm._omlx_mtp_multi_request is False
+
+    cache = lm.make_cache()
+    out = lm(tokens, cache=cache, return_hidden=True, capture_layer_ids=[1, 0])
+    assert out.gdn_states == []
+    layer0, layer1 = plain.hidden_states
+    for got, expected in zip(out.hidden_states, (layer1, layer0, layer1)):
+        assert mx.array_equal(got, expected).item()
+    assert mx.array_equal(out.logits, plain.logits).item()
+
+    drafter.scope_uids = (5,)
+    lm(mx.array([[7]]), cache=cache)
+    [(uids, caps)] = observed
+    assert uids == (5,)
+    assert [tuple(c.shape[:2]) for c in caps] == [(1, 1), (1, 1)]
