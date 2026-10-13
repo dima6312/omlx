@@ -452,3 +452,37 @@ def test_truncated_stream_flushes_partial_tag_only_as_thinking(prompt_opened):
     assert parser.feed(prefix + "unfinished</thi") == ("unfinished", "")
     assert parser.finish(truncated=True) == ("</thi", "")
     assert parser.finish(truncated=True) == ("", "")
+
+
+class TestNonStreamTruncatedThinking:
+    """A non-stream reply cut off inside a prompt-opened think block."""
+
+    class _Tokenizer:
+        think_start = "<think>"
+        think_start_id = 7
+        think_end = "</think>"
+        think_end_id = 8
+
+    class _Engine:
+        pass
+
+    def _split(self, prompt_ids, text, finish_reason):
+        from omlx.server import _extract_nonstream_thinking
+
+        engine = self._Engine()
+        engine.tokenizer = self._Tokenizer()
+        kwargs = {"_prepared_prompt": ("", prompt_ids)}
+        return _extract_nonstream_thinking(engine, [], kwargs, text, finish_reason)
+
+    def test_truncated_thought_is_thinking_when_prompt_opened_it(self):
+        assert self._split([1, 2, 7], "Thinking Process:", "length") == (
+            "Thinking Process:",
+            "",
+        )
+
+    def test_truncated_answer_stays_content_when_thinking_is_off(self):
+        assert self._split([1, 2, 7, 8], "Hi there", "length") == ("", "Hi there")
+
+    def test_finished_reply_is_unchanged(self):
+        assert self._split([1, 2, 7], "plan</think>Hi", "stop") == ("plan", "Hi")
+        assert self._split([1, 2, 7], "Hi", "stop") == ("", "Hi")

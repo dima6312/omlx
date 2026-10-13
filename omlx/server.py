@@ -4893,8 +4893,8 @@ async def create_chat_completion(
 
             # Separate thinking from content
             raw_text = clean_special_tokens(output.text) if output.text else ""
-            thinking_content, regular_content = extract_thinking(
-                raw_text, truncated=output.finish_reason == "length"
+            thinking_content, regular_content = _extract_nonstream_thinking(
+                engine, messages, chat_kwargs, raw_text, output.finish_reason
             )
             cleaned_thinking = sanitize_tool_call_markup(
                 thinking_content, engine.tokenizer
@@ -5818,6 +5818,36 @@ def _take_recoverable_withheld_text(
     ):
         return "", ""
     return thinking, content
+
+
+def _extract_nonstream_thinking(
+    engine: BaseEngine,
+    messages: list,
+    kwargs: dict,
+    raw_text: str,
+    finish_reason: str | None,
+) -> tuple[str, str]:
+    """Split a complete reply into (thinking, content).
+
+    The final text carries no open tag when the prompt itself opened the think
+    block, so a reply cut off before ``</think>`` has no tag at all and would be
+    read as the answer. The stream handlers get this from ``ThinkingParser``.
+    """
+    truncated = finish_reason == "length"
+    thinking, content = extract_thinking(raw_text, truncated=truncated)
+    if not truncated or thinking or not content or "</think>" in raw_text:
+        return thinking, content
+    try:
+        prompt, prompt_token_ids = _render_chat_prompt_for_thinking_detection(
+            engine, messages, kwargs
+        )
+        opened, _ = prompt_opens_thinking(
+            engine.tokenizer, prompt, prompt_token_ids=prompt_token_ids
+        )
+    except Exception as exc:
+        logger.debug("Could not detect non-stream thinking state: %s", exc)
+        return thinking, content
+    return (content, "") if opened else (thinking, content)
 
 
 def _nonstream_recovery_text(
@@ -7429,8 +7459,8 @@ async def create_anthropic_message(
 
             # Separate thinking from content
             raw_text = clean_special_tokens(output.text) if output.text else ""
-            thinking_content, regular_content = extract_thinking(
-                raw_text, truncated=output.finish_reason == "length"
+            thinking_content, regular_content = _extract_nonstream_thinking(
+                engine, messages, chat_kwargs, raw_text, output.finish_reason
             )
             cleaned_thinking = sanitize_tool_call_markup(
                 thinking_content, engine.tokenizer
@@ -8195,8 +8225,8 @@ async def create_response(
 
             # Process output text
             raw_text = clean_special_tokens(output.text) if output.text else ""
-            thinking_content, regular_content = extract_thinking(
-                raw_text, truncated=output.finish_reason == "length"
+            thinking_content, regular_content = _extract_nonstream_thinking(
+                engine, messages, chat_kwargs, raw_text, output.finish_reason
             )
 
             # Parse tool calls
