@@ -74,7 +74,8 @@ def ane_prefill_backend(model_type: str | None) -> str | None:
     model_type = (model_type or "").lower().replace("-", "_")
     if model_type == "k2_horizon":
         return "k2"
-    if model_type.startswith(("qwen3_5", "qwen3_6", "qwen3_8")):
+    # MiniCPM-V 4.7 wraps a Qwen3.6 MoE text model.
+    if model_type.startswith(("qwen3_5", "qwen3_6", "qwen3_8", "minicpmv4_7")):
         return "qwen"
     return None
 
