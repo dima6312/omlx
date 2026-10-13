@@ -18,6 +18,34 @@ def greedy_proposals(logits: mx.array) -> mx.array:
     return mx.argmax(logits, axis=-1)
 
 
+def markov_proposals(markov, logits, anchors, samplers: list) -> list[tuple]:
+    """DSpark proposals: each step adds the previous token's Markov correction.
+
+    Mirrors mlx-vlm ``VanillaMarkov.sample_block`` row by row; sampled rows
+    expose the corrected distribution as q.
+    """
+    previous = anchors.reshape(-1)
+    columns = []
+    accept = [[] for _ in samplers]
+    for step in range(logits.shape[1]):
+        step_logits = markov.apply_step_logits(logits[:, step], previous)
+        picks = []
+        for index, sampler in enumerate(samplers):
+            row = step_logits[index : index + 1]
+            if sampler is None:
+                picks.append(mx.argmax(row, axis=-1))
+                continue
+            lp = row.astype(mx.float32)
+            lp = lp - mx.logsumexp(lp, axis=-1, keepdims=True)
+            token, accept_lp = bg._sample_draft_with_logprobs(sampler, lp)
+            picks.append(token.reshape(1))
+            accept[index].append(accept_lp.reshape(-1))
+        previous = mx.concatenate(picks).astype(mx.int32)
+        columns.append(previous)
+    tokens = mx.stack(columns, axis=1)
+    return [(tokens[i : i + 1], accept[i]) for i in range(len(samplers))]
+
+
 def sample_positions(logits: mx.array, samplers: list) -> list[tuple]:
     """Independent per-position proposals (DFlash v1) with their q rows."""
     out = []

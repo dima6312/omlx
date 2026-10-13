@@ -158,6 +158,8 @@ class DFlashDrafter:
 
     @property
     def kind(self) -> str:
+        if hasattr(self.model, "markov_head"):
+            return "dspark"
         return "dflash2" if hasattr(self.model, "candidate_selector") else "dflash"
 
     def _row(self, uid: Any) -> _RowContext:
@@ -560,7 +562,13 @@ class DFlashDrafter:
         slots = self.ring_slots
         capacity = self.capacity
         batch = len(rows)
-        block = self.block_size
+        # DSpark reads its first proposal at the anchor, so the forward runs
+        # one mask short of the block.
+        markov = getattr(model, "markov_head", None)
+        from_anchor = markov is not None and bool(
+            getattr(model.config, "sample_from_anchor", True)
+        )
+        block = self.block_size - int(from_anchor)
         fc = model.encoder.fc if hasattr(model, "encoder") else model.fc
         dtype = fc.weight.dtype if hasattr(fc, "weight") else mx.bfloat16
         if hasattr(fc, "scales"):
@@ -757,11 +765,15 @@ class DFlashDrafter:
                 row.fed = b + n
                 self._remember(row, h_ctx[index : index + 1, :n])
 
-        draft_hidden = model.norm(h)[:, 1:]
+        draft_hidden = model.norm(h)
+        if not from_anchor:
+            draft_hidden = draft_hidden[:, 1:]
         logits = model._logits(draft_hidden)
         samplers = [sampler for *_, sampler in rows]
         selector = getattr(model, "candidate_selector", None)
-        if selector is not None and selection.fused_select_eligible(
+        if markov is not None:
+            proposals = selection.markov_proposals(markov, logits, anchors, samplers)
+        elif selector is not None and selection.fused_select_eligible(
             selector, draft_hidden
         ):
             proposals = selection.select_fused(

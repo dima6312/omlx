@@ -1327,6 +1327,8 @@ _DFLASH_BATCHED_MODEL_TYPES = {
         "gemma4",
         "gemma4_unified",
         "muse_glimmer",
+        # MiniCPM-V 4.7 keeps a qwen3_5_moe trunk and drafts with DSpark.
+        "minicpmv4_7",
     ),
     "batched": (
         "qwen3_5",
