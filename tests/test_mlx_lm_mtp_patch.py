@@ -3481,9 +3481,10 @@ class TableDrafter:
 
     target_layer_ids = [1, 3]
 
-    def __init__(self, depth, wrong_from=None):
+    def __init__(self, depth, wrong_from=None, adaptive=False):
         self.depth = depth
         self.wrong_from = wrong_from
+        self.adaptive = adaptive
         self.fed = {}
         self.released = []
         self.jobs = 0
@@ -3531,17 +3532,22 @@ class TableDrafter:
         self.released.extend(uids)
 
 
-def _drafted_counting_model(depth, wrong_from=None):
+def _drafted_counting_model(depth, wrong_from=None, adaptive=False):
     model = CapturingCountingModel()
     model._omlx_mtp_depth = depth
-    model._omlx_drafter = TableDrafter(depth, wrong_from=wrong_from)
+    model._omlx_drafter = TableDrafter(depth, wrong_from=wrong_from, adaptive=adaptive)
     return model
 
 
+def _verify_widths(model):
+    return [shape for shape, _ in model.captures if shape[1] > 1]
+
+
+@pytest.mark.parametrize("adaptive", [False, True])
 @pytest.mark.parametrize("wrong_from", [None, 0, 2])
 @pytest.mark.parametrize("late_join", [False, True])
 def test_block_drafter_matches_standard_and_feeds_committed_context(
-    wrong_from, late_join
+    wrong_from, late_join, adaptive
 ):
     prompts = [[1, 2], [10, 11, 12], [30, 31]]
     limits = [12, 8, 15]
@@ -3549,7 +3555,7 @@ def test_block_drafter_matches_standard_and_feeds_committed_context(
     standard._omlx_mtp_decode_enabled = False
     expected, _ = generate(standard, prompts, limits, late_join=late_join)
 
-    model = _drafted_counting_model(5, wrong_from=wrong_from)
+    model = _drafted_counting_model(5, wrong_from=wrong_from, adaptive=adaptive)
     output, terminal = generate(model, prompts, limits, late_join=late_join)
     assert output == expected
     drafter = model._omlx_drafter
@@ -3558,9 +3564,11 @@ def test_block_drafter_matches_standard_and_feeds_committed_context(
     assert all(ids == drafter.target_layer_ids for _, ids in model.captures)
     # Each row's context holds exactly one hidden per committed position:
     # the last prompt token, then every emitted token except the newest
-    # one, which is still the anchor. Rejected drafts never enter it.
+    # one, which is still the anchor. Rejected drafts never enter it. An
+    # adaptive row may hand over to ordinary decode (calibration or park),
+    # whose pipelined step also forwards the newest token.
     for uid in terminal:
-        assert drafter.fed[uid] == len(output[uid])
+        assert drafter.fed[uid] - len(output[uid]) in ((0, 1) if adaptive else (0,))
     # Finished rows leave the drafter registry.
     assert sorted(drafter.released) == sorted(terminal)
 
@@ -3584,6 +3592,69 @@ def test_block_drafter_serves_sampled_rows_with_draft_distribution():
         1: "length",
     }
     assert model._omlx_drafter.jobs > 0
+
+
+@pytest.mark.parametrize("adaptive", [False, True])
+@pytest.mark.parametrize("rows", [1, 3])
+def test_block_drafter_depth_controller_narrows_verify_window(adaptive, rows):
+    """An adaptive drafter verifies the depths its controller picks."""
+    prompts = [[1, 2], [10, 11, 12], [30, 31]][:rows]
+    limits = [40] * rows
+    standard = CapturingCountingModel()
+    standard._omlx_mtp_decode_enabled = False
+    expected, _ = generate(standard, prompts, limits)
+
+    model = _drafted_counting_model(7, wrong_from=1, adaptive=adaptive)
+    output, _ = generate(model, prompts, limits)
+    assert output == expected
+    shapes = _verify_widths(model)
+    # Rows that share a window keep verifying together.
+    assert {batch for batch, _ in shapes} == {rows}
+    widths = [width for _, width in shapes]
+    if not adaptive:
+        assert set(widths) == {8}
+    elif rows == 1:
+        # The singleton controller's warmup sweep measures every depth.
+        assert widths[:7] == [8, 7, 6, 5, 4, 3, 2]
+    else:
+        # The cohort policy measures each depth three times, deepest first.
+        assert widths[:6] == [8, 8, 8, 7, 7, 7]
+
+
+def test_block_drafter_clips_sampled_draft_distributions():
+    """A narrowed window verifies against the matching prefix of q."""
+    from omlx.utils.sampling import make_sampler
+
+    mx.random.seed(5)
+    model = _drafted_counting_model(5, wrong_from=0, adaptive=True)
+    output, terminal = generate(
+        model, [[1, 2], [10, 11]], [30, 30], samplers=[None, make_sampler(temp=0.7)]
+    )
+    assert output[0] == list(range(3, 33))
+    assert output[1] == list(range(12, 42))
+    assert {r.finish_reason for r in terminal.values()} == {"length"}
+    assert min(width for _, width in _verify_widths(model)) < 6
+
+
+def test_clip_block_drafts_keeps_aligned_proposal_prefix():
+    ids = mx.array([[1, 2], [3, 4], [5, 6], [7, 8]], dtype=mx.int32)
+    logq = mx.log(mx.full((4, 2), 0.5))
+    state = bg._MtpState(uid=0)
+    state.drafts = mx.array([1, 3, 5, 7], dtype=mx.uint32)
+    state.draft_lps = []
+    state.draft_accept_lps = bg.SparseDraftQ(ids, logq, 64)
+    bg._clip_block_drafts(state, 2)
+    assert state.drafts.tolist() == [1, 3]
+    assert len(state.draft_accept_lps) == 2
+    assert state.draft_accept_lps.ids.tolist() == [[1, 2], [3, 4]]
+
+    state.drafts = mx.array([1, 3, 5], dtype=mx.uint32)
+    state.draft_accept_lps = [mx.full((64,), float(i)) for i in range(3)]
+    bg._clip_block_drafts(state, 1)
+    assert state.drafts.tolist() == [1]
+    assert [row[0].item() for row in state.draft_accept_lps] == [0.0]
+    bg._clip_block_drafts(state, 3)
+    assert state.drafts.tolist() == [1]
 
 
 @pytest.mark.parametrize("unequal_acceptance", [False, True])

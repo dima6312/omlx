@@ -4239,6 +4239,7 @@ class EnginePool:
                             getattr(model_settings, "dflash_draft_quant_group_size", 0)
                             or 64
                         ),
+                        verify_mode=getattr(model_settings, "dflash_verify_mode", None),
                     )
 
                 loop = asyncio.get_running_loop()
@@ -4257,7 +4258,6 @@ class EnginePool:
                     ignored = [
                         name
                         for name, default in (
-                            ("dflash_verify_mode", None),
                             ("dflash_max_ctx", None),
                             ("dflash_draft_window_size", None),
                             ("dflash_draft_sink_size", 0),

@@ -170,15 +170,25 @@ def _concat_captured(captured: Sequence[mx.array]) -> mx.array:
 class DFlashDrafter:
     """Row-wise DFlash drafting against per-request context caches."""
 
-    def __init__(self, model: nn.Module, *, block_size: int, source_path: str):
+    def __init__(
+        self,
+        model: nn.Module,
+        *,
+        block_size: int,
+        source_path: str,
+        adaptive: bool = True,
+    ):
         self.model = model
         self.source_path = source_path
         self.target_layer_ids: list[int] = [
             int(i) for i in model.config.target_layer_ids
         ]
         self.block_size = int(block_size)
-        # Lightning MTP reads this as the fixed draft depth.
+        # Lightning MTP reads this as the maximum draft depth.
         self.depth = self.block_size - 1
+        # Adaptive: Lightning MTP's depth controllers choose how many drafts
+        # of each block to verify. Otherwise the whole block is verified.
+        self.adaptive = bool(adaptive)
         self._rows: dict[Any, _RowContext] = {}
         self._cohort: _Cohort | None = None
         # Prefill captures wait under the request id until the scheduler
@@ -947,6 +957,18 @@ def resolve_block_size(model: nn.Module, requested: int | None) -> int:
     return min(block, limit)
 
 
+def resolve_verify_mode(mode: str | None) -> bool:
+    """Whether ``dflash_verify_mode`` lets the verified part of a block adapt."""
+    if mode in (None, "adaptive"):
+        return True
+    if mode in ("dflash", "off"):
+        return False
+    if mode == "ddtree":
+        logger.info("DFlash ddtree verify is not supported; using adaptive")
+        return True
+    raise ValueError(f"unknown dflash_verify_mode {mode!r}")
+
+
 def quantize_drafter(model: nn.Module, *, bits: int, group_size: int) -> int:
     """Affine-quantize the drafter's linear layers; returns the layer count."""
     quantized = 0
@@ -972,12 +994,14 @@ def load_dflash_drafter(
     quant_enabled: bool = False,
     quant_bits: int = 4,
     quant_group_size: int = 64,
+    verify_mode: str | None = None,
 ) -> DFlashDrafter:
     """Load a DFlash checkpoint through mlx-vlm and bind it to ``target_model``.
 
     ``target_model`` is the mlx-vlm model whose ``language_model`` owns the
     embeddings and lm_head the drafter borrows.
     """
+    adaptive = resolve_verify_mode(verify_mode)
     model, kind = load_drafter(path, kind="dflash")
     if kind != "dflash":
         raise ValueError(f"{path} resolved to drafter kind {kind!r}, expected 'dflash'")
@@ -995,12 +1019,18 @@ def load_dflash_drafter(
     if qwen35_packed_linear.enabled(target_model):
         packed = qwen35_packed_linear.pack_drafter(model)
         logger.info("DFlash drafter packed 4-bit projections: %d layers", packed)
-    drafter = DFlashDrafter(model, block_size=block, source_path=path)
+    drafter = DFlashDrafter(
+        model,
+        block_size=block,
+        source_path=path,
+        adaptive=adaptive,
+    )
     logger.info(
-        "DFlash drafter loaded: path=%s kind=%s block=%d target_layers=%s",
+        "DFlash drafter loaded: path=%s kind=%s block=%d adaptive=%s target_layers=%s",
         path,
         drafter.kind,
         block,
+        drafter.adaptive,
         drafter.target_layer_ids,
     )
     return drafter

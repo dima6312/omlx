@@ -428,3 +428,13 @@ def test_resolve_block_size_clamps_to_trained_block_and_mtp_limit():
     assert dd.resolve_block_size(model, None) == dd.MAX_LIGHTNING_MTP_DRAFT_TOKENS + 1
     with pytest.raises(ValueError):
         dd.resolve_block_size(model, 1)
+
+
+def test_verify_mode_selects_adaptive_depth():
+    assert dd.resolve_verify_mode(None) is True
+    assert dd.resolve_verify_mode("adaptive") is True
+    assert dd.resolve_verify_mode("ddtree") is True
+    assert dd.resolve_verify_mode("dflash") is False
+    assert dd.resolve_verify_mode("off") is False
+    with pytest.raises(ValueError):
+        dd.resolve_verify_mode("tree")

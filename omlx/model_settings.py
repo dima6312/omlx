@@ -270,7 +270,7 @@ class ModelSettings:
             targets draft inside the batched engine (Lightning MTP verify path
             with greedy or sampled acceptance, continuous batching); other
             targets use the single-stream DFlash engine, which alone honours
-            the max_ctx, cache, window, sink and verify_mode settings below.
+            the max_ctx, cache, window and sink settings below.
         dflash_draft_model: Path/repo for DFlash draft checkpoint.
         dflash_draft_quant_enabled: Enable draft model quantization.
         dflash_draft_quant_weight_bits: Quantization weight bits (2, 4, 8).
@@ -289,8 +289,10 @@ class ModelSettings:
             (default 0, disabling sink tokens).
         dflash_block_size: Draft/verify tokens per cycle (None = checkpoint default).
         dflash_verify_mode: Verifier algorithm — "dflash", "adaptive", "ddtree", or "off"
-            (None = dflash default "adaptive"). "adaptive" can shrink block size when
-            acceptance drops.
+            (None = "adaptive"). In the batched engine "adaptive" verifies the
+            number of drafts per cycle that the Lightning MTP depth controllers
+            pick from measured cost and acceptance, "dflash" and "off" verify
+            the whole block, and "ddtree" falls back to "adaptive".
         mtp_enabled: Enable native multi-token prediction (mlx-lm PR 990 / PR 15 monkey-patch).
             When True, BatchGenerator uses MTP draft+verify for singleton decode and
             for multi-row decode batches whose cache positions are aligned. Unaligned
