@@ -60,9 +60,6 @@ def resolve_verify_mode(mode: str | None) -> bool:
         return True
     if mode in ("dflash", "off"):
         return False
-    if mode == "ddtree":
-        logger.info("DFlash ddtree verify is not supported; using adaptive")
-        return True
     raise ValueError(f"unknown dflash_verify_mode {mode!r}")
 
 
@@ -93,11 +90,13 @@ def load_dflash_drafter(
     quant_bits: int = 4,
     quant_group_size: int = 64,
     verify_mode: str | None = None,
+    window_size: int | None = None,
 ) -> DFlashDrafter:
     """Load a DFlash checkpoint through mlx-vlm and bind it to ``target_model``.
 
     ``target_model`` is the mlx-vlm model whose ``language_model`` owns the
-    embeddings and lm_head the drafter borrows.
+    embeddings and lm_head the drafter borrows. ``window_size`` overrides the
+    checkpoint's context window.
     """
     adaptive = resolve_verify_mode(verify_mode)
     model, kind = load_drafter(path, kind="dflash")
@@ -137,6 +136,7 @@ def load_dflash_drafter(
         block_size=block,
         source_path=path,
         adaptive=adaptive,
+        window_size=window_size,
     )
     logger.info(
         "DFlash drafter loaded: path=%s kind=%s block=%d adaptive=%s target_layers=%s",

@@ -995,11 +995,10 @@ struct ProfileDetailCard: View {
 
     private func dflashQuantLabel(_ s: [String: AnyCodable]) -> String {
         let w = intOf(s["dflash_draft_quant_weight_bits"]) ?? 4
-        let a = intOf(s["dflash_draft_quant_activation_bits"]) ?? 8
         let g = intOf(s["dflash_draft_quant_group_size"]) ?? 64
         return String(localized: "profile.detail.acceleration.dflash_quant",
-                      defaultValue: "Drafter quant · W\(w)/A\(a) G\(g)",
-                      comment: "DFlash drafter quantization chip; placeholders are weight bits, activation bits, group size")
+                      defaultValue: "Drafter quant · W\(w) G\(g)",
+                      comment: "DFlash drafter quantization chip; placeholders are weight bits, group size")
     }
 
     private func specprefillLabel(_ s: [String: AnyCodable], on: Bool) -> String {

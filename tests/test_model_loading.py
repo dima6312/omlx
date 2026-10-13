@@ -443,7 +443,7 @@ class TestVlmMtpPreLoadDispatch:
         assert calls == ["attach=False", "sanitize", "runtime"]
 
     def test_vlm_patches_skipped_when_not_for_vlm(self, tmp_path, monkeypatch):
-        # BatchedEngine / DFlashEngine / LLM loader paths must NOT touch
+        # BatchedEngine / LLM loader paths must NOT touch
         # mlx-vlm classes even when the model declares MTP heads. for_vlm
         # defaults to False so they pass through without invoking mlx-vlm
         # patches.

@@ -528,7 +528,7 @@ def maybe_apply_pre_load_patches(
       LanguageModel tree even when ``mtp_enabled`` is False (otherwise
       strict load fails on a Qwen3.6 *-mtp VLM and the engine falls back
       to LLM, losing vision). VLMBatchedEngine passes ``for_vlm=True``;
-      BatchedEngine / DFlashEngine / LLM loaders keep the default.
+      BatchedEngine / LLM loaders keep the default.
     - mlx-vlm MoE VLM sanitize patch when ``for_vlm`` is True and the
       checkpoint is a Qwen3.6 MoE VLM without declared MTP heads.
       Pre-converted mlx-lm exports ship ``switch_mlp`` weights; stock
@@ -995,7 +995,7 @@ def maybe_apply_pre_load_patches(
         # behaves identically to a stock no-MTP model at inference time
         # (with a small constant memory cost for the unused MTPModule).
         #
-        # ``for_vlm=False`` skips this branch on BatchedEngine / DFlashEngine
+        # ``for_vlm=False`` skips this branch on BatchedEngine
         # paths so mlx-vlm classes are not touched when the load goes
         # through mlx-lm only.
         if for_vlm:
@@ -1117,7 +1117,7 @@ def maybe_apply_pre_load_patches(
     # to vision_tower.* for Qwen3.6's nested ViT layout. Wraps whichever
     # Model.sanitize is current (stock mlx-vlm or mlx_vlm_mtp runtime), so
     # the call has to land after apply_mlx_vlm_mtp_runtime_patch above.
-    # VLM-only: dflash / mlx-lm paths never instantiate mlx-vlm classes,
+    # VLM-only: mlx-lm paths never instantiate mlx-vlm classes,
     # so touching them there is just dead weight.
     if for_vlm and model_type and model_type.startswith("qwen3_5_moe"):
         try:
@@ -1328,11 +1328,20 @@ _DFLASH_BATCHED_MODEL_TYPES = {
 
 
 def dflash_batched_supported(model_type: str | None, engine_type: str | None) -> bool:
-    """True when DFlash runs as a block drafter inside the batched engine.
-
-    MiMo V2 keeps the single-stream DFlashEngine.
-    """
+    """True when DFlash runs as a block drafter inside the batched engine."""
     return model_type in _DFLASH_BATCHED_MODEL_TYPES.get(engine_type or "", ())
+
+
+def dflash_compatibility(
+    model_type: str | None, engine_type: str | None
+) -> tuple[bool, str]:
+    """``(supported, reason)`` for the admin DFlash toggle."""
+    if dflash_batched_supported(model_type, engine_type):
+        return True, ""
+    return False, (
+        "DFlash supports Qwen3, Qwen3.5/3.6, Laguna, GLM-5.3, Gemma 4 and Muse "
+        f"Glimmer models (model_type='{model_type or ''}', engine='{engine_type}')"
+    )
 
 
 def dflash_batched_requested(model_settings: Any | None) -> bool:

@@ -815,7 +815,7 @@ async def test_enabling_dflash_over_a_deleted_draft_path_is_rejected(tmp_path):
         patch("omlx.admin.routes._get_engine_pool", return_value=pool),
         patch("omlx.admin.routes._get_settings_manager", return_value=manager),
         patch("omlx.admin.routes._get_server_state", return_value=MagicMock()),
-        patch("omlx.engine.dflash.is_dflash_compatible", return_value=(True, "")),
+        patch.object(admin_routes, "dflash_compatibility", return_value=(True, "")),
     ):
         for payload in (
             {"dflash_enabled": True},

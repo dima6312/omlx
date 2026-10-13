@@ -12136,25 +12136,25 @@
       }
     },
     "profile.detail.acceleration.dflash_quant" : {
-      "comment" : "DFlash drafter quantization chip; placeholders are weight bits, activation bits, group size",
+      "comment" : "DFlash drafter quantization chip; placeholders are weight bits, group size",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Drafter quant · W%1$lld/A%2$lld G%3$lld"
+            "value" : "Drafter quant · W%1$lld G%2$lld"
           }
         },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Квант drafter · W%1$lld/A%2$lld G%3$lld"
+            "value" : "Квант drafter · W%1$lld G%2$lld"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "起草器量化 · W%1$lld/A%2$lld G%3$lld"
+            "value" : "起草器量化 · W%1$lld G%2$lld"
           }
         }
       }
@@ -22078,150 +22078,6 @@
         }
       }
     },
-    "settings.dflash.quant.4bit" : {
-      "comment" : "DFlash draft quantization option",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "4-bit"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "4-бит"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "4 位"
-          }
-        }
-      }
-    },
-    "settings.dflash.quant.8bit" : {
-      "comment" : "DFlash draft quantization option",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "8-bit"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "8-бит"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "8 位"
-          }
-        }
-      }
-    },
-    "settings.dflash.quant.activation.16" : {
-      "comment" : "DFlash draft quantization activation bits option",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "16-bit"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "16-бит"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "16 位"
-          }
-        }
-      }
-    },
-    "settings.dflash.quant.activation.32" : {
-      "comment" : "DFlash draft quantization activation bits option",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "32-bit"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "32-бит"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "32 位"
-          }
-        }
-      }
-    },
-    "settings.dflash.quant.activation.default" : {
-      "comment" : "DFlash draft quantization activation bits — use server default",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "default"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "по умолчанию"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "默认"
-          }
-        }
-      }
-    },
-    "settings.dflash.quant.bf16" : {
-      "comment" : "DFlash draft quantization option for bf16 (no quantization)",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "bf16 (default)"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "bf16 (по умолчанию)"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "bf16（默认）"
-          }
-        }
-      }
-    },
     "settings.dflash.quant.group.default" : {
       "comment" : "DFlash draft quantization group size — use server default",
       "extractionState" : "extracted_with_value",
@@ -22342,30 +22198,6 @@
         }
       }
     },
-    "settings.dflash.verify_mode.ddtree" : {
-      "comment" : "DFlash verify mode: DDTree verifier",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "ddtree"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ddtree"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ddtree"
-          }
-        }
-      }
-    },
     "settings.dflash.verify_mode.default" : {
       "comment" : "DFlash verify mode option meaning the server default is used",
       "extractionState" : "extracted_with_value",
@@ -22415,7 +22247,7 @@
       }
     },
     "settings.dflash.verify_mode.off" : {
-      "comment" : "DFlash verify mode: disable speculative verify",
+      "comment" : "DFlash verify mode: always verify the whole block",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
@@ -22458,30 +22290,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "选择草稿模型…"
-          }
-        }
-      }
-    },
-    "settings.experimental.dflash.draft_quant_activation.label" : {
-      "comment" : "Row label for the DFlash draft quantization activation bits picker",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Activation Bits"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Биты активации"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "激活位宽"
           }
         }
       }
@@ -22565,19 +22373,19 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Enable quantization for the draft model (weight, activation bits & group size)."
+            "value" : "Enable quantization for the draft model (weight bits & group size)."
           }
         },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Включить квантование draft-модели (биты весов, активаций и размер группы)."
+            "value" : "Включить квантование draft-модели (биты весов и размер группы)."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "为草稿模型启用量化（权重位宽、激活位宽和分组大小）。"
+            "value" : "为草稿模型启用量化（权重位宽和分组大小）。"
           }
         }
       }
@@ -22626,366 +22434,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "DFlash"
-          }
-        }
-      }
-    },
-    "settings.experimental.dflash.max_ctx.label" : {
-      "comment" : "Row label for the DFlash max-context fallback field",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Max Context (fallback)"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Макс. контекст (fallback)"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "最大上下文（回退）"
-          }
-        }
-      }
-    },
-    "settings.experimental.dflash.max_ctx.placeholder" : {
-      "comment" : "Placeholder shown when DFlash max-context is unset (no cap)",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "unlimited"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "без ограничения"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "无限制"
-          }
-        }
-      }
-    },
-    "settings.experimental.dflash.max_ctx.sub" : {
-      "comment" : "Sublabel describing the DFlash max-context fallback",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Prompts at or above this token count switch to BatchedEngine. Empty = unlimited."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Промпты с этим числом токенов или выше переключаются на BatchedEngine. Пусто = без ограничения."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Token 数达到或超过此值的提示将切换到 BatchedEngine。空 = 无限制。"
-          }
-        }
-      }
-    },
-    "settings.experimental.dflash.mem_cache_entries.label" : {
-      "comment" : "Row label for the DFlash L1 in-memory cache max entries field",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Cache Entries"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Записи кэша"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "缓存条目"
-          }
-        }
-      }
-    },
-    "settings.experimental.dflash.mem_cache_entries.sub" : {
-      "comment" : "Sublabel for the DFlash L1 cache max entries field",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Maximum prefix snapshots kept in RAM. Each entry stores KV + draft GDN state."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Максимум префиксных снимков в оперативной памяти. Каждая запись хранит KV и состояние draft GDN."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "保留在 RAM 中的最大前缀快照数。每个条目存储 KV + 草稿 GDN 状态。"
-          }
-        }
-      }
-    },
-    "settings.experimental.dflash.mem_cache.label" : {
-      "comment" : "Row label for the DFlash L1 in-memory cache toggle",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "DFlash in-memory cache"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Кэш DFlash в памяти"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "DFlash 内存缓存"
-          }
-        }
-      }
-    },
-    "settings.experimental.dflash.mem_cache.sub" : {
-      "comment" : "Sublabel for the DFlash L1 in-memory cache toggle",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "DFlash L1 prefix snapshot cache in RAM."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "L1-кэш префиксных снимков DFlash в оперативной памяти."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "RAM 中的 DFlash L1 前缀快照缓存。"
-          }
-        }
-      }
-    },
-    "settings.experimental.dflash.sink_size.label" : {
-      "comment" : "Row label for the DFlash attention-sink tokens field",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Draft Sink Size"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Размер attention sink"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "草稿 Sink 大小"
-          }
-        }
-      }
-    },
-    "settings.experimental.dflash.sink_size.sub" : {
-      "comment" : "Sublabel for the DFlash draft sink size field",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Attention-sink tokens always kept in the window. Empty = dflash default (0)."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Attention-sink-токены всегда остаются в окне. Пусто = значение DFlash по умолчанию (0)."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "注意力 sink Token 始终保留在窗口中。空 = dflash 默认（0）。"
-          }
-        }
-      }
-    },
-    "settings.experimental.dflash.ssd_cache_size.label" : {
-      "comment" : "Row label for the DFlash L2 SSD cache disk budget field",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "SSD Cache Size"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Размер SSD-кэша"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "SSD 缓存大小"
-          }
-        }
-      }
-    },
-    "settings.experimental.dflash.ssd_cache_size.sub" : {
-      "comment" : "Sublabel for the DFlash SSD cache size field",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Disk budget for L2 spill; oldest entries are evicted when exceeded."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Дисковый бюджет для L2 spill; самые старые записи удаляются при превышении."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "L2 溢出的磁盘预算；超出时驱逐最旧的条目。"
-          }
-        }
-      }
-    },
-    "settings.experimental.dflash.ssd_cache.label" : {
-      "comment" : "Row label for the DFlash L2 SSD cache toggle",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "DFlash SSD cache"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "SSD-кэш DFlash"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "DFlash SSD 缓存"
-          }
-        }
-      }
-    },
-    "settings.experimental.dflash.ssd_cache.sub" : {
-      "comment" : "Default sublabel for the DFlash SSD cache toggle",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "L2 spill of evicted L1 entries to disk."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "L2-хранилище для вытесненных L1-записей на диске."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "被驱逐的 L1 条目溢出到磁盘的 L2。"
-          }
-        }
-      }
-    },
-    "settings.experimental.dflash.ssd_cache.sub.needs_l1" : {
-      "comment" : "Sublabel for the DFlash SSD cache row when the L1 in-memory cache is off",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Requires the in-memory cache to be enabled."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Требует включенного кэша в памяти."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "需要启用内存缓存。"
-          }
-        }
-      }
-    },
-    "settings.experimental.dflash.ssd_cache.sub.unavailable" : {
-      "comment" : "Sublabel for the DFlash SSD cache row when the global SSD cache directory isn't configured",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Enable the global paged SSD cache directory first."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Сначала включите глобальный каталог paged SSD-кэша."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "请先启用全局分页 SSD 缓存目录。"
           }
         }
       }
@@ -23045,19 +22493,19 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Verifier algorithm. \"adaptive\" shrinks block size when acceptance drops; \"off\" disables speculative verify."
+            "value" : "Verifier algorithm. \"adaptive\" picks how many drafts to verify each cycle from measured cost and acceptance; \"dflash\" and \"off\" verify the whole block."
           }
         },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Алгоритм верификатора. \"adaptive\" уменьшает размер блока при снижении доли принятых токенов; \"off\" отключает спекулятивную проверку."
+            "value" : "Алгоритм верификатора. \"adaptive\" выбирает, сколько черновых токенов проверять за цикл, по измеренной стоимости и доле принятых; \"dflash\" и \"off\" проверяют весь блок."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "验证器算法。“自适应”在接受率下降时缩小块大小；“关闭”禁用推测验证。"
+            "value" : "验证器算法。“自适应”根据实测开销和接受率选择每轮验证的草稿数；“dflash”和“关闭”验证整个块。"
           }
         }
       }

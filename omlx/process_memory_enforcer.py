@@ -1343,18 +1343,12 @@ class ProcessMemoryEnforcer:
 
     @staticmethod
     def _resolve_scheduler(entry: Any) -> Any | None:
-        """Resolve the watermark target (Scheduler or DFlash guard) from an
-        EnginePool entry.
+        """Resolve the watermark target Scheduler from an EnginePool entry.
 
         Most engines (BatchedEngine, VLMBatchedEngine) wrap the scheduler
-        as ``entry.engine._engine.engine.scheduler`` (AsyncEngineCore →
-        EngineCore → Scheduler). Some non-streaming engines may expose
-        ``entry.engine.scheduler`` directly — including ``DFlashEngine`` in
-        fallback mode, whose ``scheduler`` property resolves the fallback
-        engine's real scheduler. DFlash's *primary* speculative path has no
-        scheduler at all, so it exposes a lightweight ``_prefill_guard`` that
-        carries the same watermark attrs; tried last so standard engines
-        resolve unchanged. Returns None if nothing resolves.
+        as ``entry.engine._engine.engine.scheduler`` (AsyncEngineCore ->
+        EngineCore -> Scheduler). Some engines may expose
+        ``entry.engine.scheduler`` directly. Returns None if nothing resolves.
         """
         eng = entry.engine
         if eng is None:
@@ -1369,10 +1363,7 @@ class ProcessMemoryEnforcer:
                 sched = getattr(inner_engine, "scheduler", None)
                 if sched is not None:
                     return sched
-        # DFlash primary mode bypasses the scheduler entirely; the enforcer
-        # still needs to push the ceiling somewhere, so it lands on the
-        # engine's ``_prefill_guard`` (None for every non-DFlash engine).
-        return getattr(eng, "_prefill_guard", None)
+        return None
 
     def _propagate_memory_limit(self) -> None:
         """Propagate ceiling-derived watermarks to all schedulers.
@@ -1388,14 +1379,6 @@ class ProcessMemoryEnforcer:
         abort_limit = self._get_abort_limit_bytes()
         hot_cache_reserved = (
             self._hot_cache_reserved_bytes() if ceiling > 0 or abort_limit > 0 else 0
-        )
-        # Clamp to the reservation: the usage-side exclusion must never exceed
-        # what the ceiling actually gave up, or a transient hot-cache overshoot
-        # past max_bytes would net-weaken the guard exactly under pressure.
-        hot_cache_used = (
-            min(self._hot_cache_used_bytes(), hot_cache_reserved)
-            if hot_cache_reserved > 0
-            else 0
         )
         scheduler_ceiling = self._scheduler_limit_bytes(
             ceiling, reserved=hot_cache_reserved
@@ -1438,11 +1421,6 @@ class ProcessMemoryEnforcer:
                     # Its rank processes own the schedulers and receive their
                     # guard budgets from the signed deployment, so there is no
                     # coordinator scheduler for this enforcer to update.
-                    continue
-                if (
-                    type(engine).__name__ == "DFlashEngine"
-                    and getattr(engine, "_fallback_engine", None) is None
-                ):
                     continue
                 if getattr(engine, "is_diffusion_model", False):
                     continue
@@ -1487,12 +1465,6 @@ class ProcessMemoryEnforcer:
             scheduler._memory_metal_cap_bytes = breakdown["metal_cap"]
             scheduler._memory_metal_cap_raw_bytes = metal_cap_raw
             scheduler._memory_hot_cache_reserved_bytes = hot_cache_reserved
-            # Usage-side counterpart of the reservation above: targets whose
-            # usage read is raw phys_footprint (the DFlash primary guard)
-            # subtract this so serialized hot-cache CPU bytes are not charged
-            # both here and in the reserved ceiling. The Scheduler reads its
-            # own live counter instead and ignores this attr.
-            scheduler._memory_hot_cache_used_bytes = hot_cache_used
             # Tier name disambiguates dynamic = computed reclaimable
             # (safe/balanced/aggressive) from dynamic = user-pinned
             # custom_ceiling_bytes (custom). The advice ladder needs

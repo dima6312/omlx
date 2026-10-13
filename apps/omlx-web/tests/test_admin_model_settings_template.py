@@ -21,13 +21,6 @@ def _dashboard_script() -> str:
     return (root / "omlx_web/static/js/dashboard.js").read_text()
 
 
-def _status_template() -> str:
-    root = Path(__file__).resolve().parents[1]
-    return (
-        root / "omlx_web/templates/dashboard/blocks/_active_models.html"
-    ).read_text()
-
-
 def _section(html: str, start_marker: str, end_marker: str) -> str:
     after = html.split(start_marker, 1)[1]
     assert end_marker in after, f"{end_marker!r} must follow {start_marker!r}"
@@ -113,17 +106,32 @@ def test_reasoning_effort_reload_restores_preset_or_custom_editor():
 
 def test_model_settings_feature_labels_use_i18n_keys():
     modal_html = _model_settings_template()
-    status_html = _status_template()
 
     assert "{{ t('modal.model_settings.reasoning_parser') }}" in modal_html
     assert "{{ t('modal.model_settings.specprefill') }}" in modal_html
     assert "{{ t('modal.model_settings.dflash') }}" in modal_html
-    assert "{{ t('status.active_models.dflash_label') }}" in status_html
 
     assert ">Reasoning Parser</label>" not in modal_html
     assert ">SpecPrefill</span>" not in modal_html
     assert ">DFlash</span>" not in modal_html
-    assert ">DFlash</span>" not in status_html
+
+
+def test_dflash_ui_omits_settings_removed_from_the_admin_api():
+    """The settings API forbids unknown fields, so a stale key fails every save."""
+    html = _model_settings_template()
+    script = _dashboard_script()
+    removed = (
+        "dflash_draft_quant_activation_bits",
+        "dflash_max_ctx",
+        "dflash_in_memory_cache",
+        "dflash_ssd_cache",
+        "dflash_draft_sink_size",
+    )
+
+    for field in removed:
+        assert field not in html
+        assert field not in script
+    assert 'value="ddtree"' not in html
 
 
 def test_model_settings_feature_i18n_keys_exist_in_every_locale():
@@ -133,7 +141,6 @@ def test_model_settings_feature_i18n_keys_exist_in_every_locale():
         "modal.model_settings.reasoning_parser",
         "modal.model_settings.specprefill",
         "modal.model_settings.dflash",
-        "status.active_models.dflash_label",
         "modal.model_settings.qwen_ane",
         "modal.model_settings.qwen_ane_hint",
         "modal.model_settings.qwen_ane_prompt_block",

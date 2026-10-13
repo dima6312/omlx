@@ -22,6 +22,7 @@ from mlx_vlm.speculative.drafters.muse_glimmer_assistant import (
     MuseGlimmerAssistantDraftModel,
 )
 
+from omlx.model_settings import ModelSettings
 from omlx.scheduler import Scheduler
 from omlx.speculative import dflash as dd
 from omlx.speculative.dflash import kernels, selection
@@ -593,8 +594,9 @@ def test_resolve_block_size_clamps_to_trained_block_and_mtp_limit():
 def test_verify_mode_selects_adaptive_depth():
     assert dd.resolve_verify_mode(None) is True
     assert dd.resolve_verify_mode("adaptive") is True
-    assert dd.resolve_verify_mode("ddtree") is True
     assert dd.resolve_verify_mode("dflash") is False
     assert dd.resolve_verify_mode("off") is False
     with pytest.raises(ValueError):
         dd.resolve_verify_mode("tree")
+    # Settings saved before ddtree was removed load as adaptive.
+    assert ModelSettings(dflash_verify_mode="ddtree").dflash_verify_mode == "adaptive"

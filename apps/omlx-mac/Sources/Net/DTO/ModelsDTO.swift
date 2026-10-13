@@ -58,9 +58,6 @@ struct ModelDTO: Codable, Equatable, Sendable, Identifiable {
     /// Human-readable explanation when `dflashCompatible` is false. Surfaced
     /// as a tooltip on the disabled DFlash toggle.
     let dflashCompatibilityReason: String?
-    /// True when the global paged-SSD cache directory is configured. The
-    /// DFlash SSD-cache sub-toggle stays disabled when false.
-    let dflashSsdCacheAvailable: Bool?
     /// True when the model is structurally compatible with native MTP.
     let mtpCompatible: Bool?
     let mtpCompatibilityReason: String?
@@ -165,18 +162,8 @@ struct ModelSettingsDTO: Codable, Equatable, Sendable {
     let dflashDraftModel: String?
     let dflashDraftQuantEnabled: Bool?
     let dflashDraftQuantWeightBits: Int?
-    let dflashDraftQuantActivationBits: Int?
     let dflashDraftQuantGroupSize: Int?
-    let dflashMaxCtx: Int?
-    let dflashInMemoryCache: Bool?
-    let dflashInMemoryCacheMaxEntries: Int?
-    /// Stored in bytes server-side; the editor row exposes a GiB-scaled
-    /// view via `DflashByteSize.gibToBytes` / `bytesToGib`.
-    let dflashInMemoryCacheMaxBytes: Int64?
-    let dflashSsdCache: Bool?
-    let dflashSsdCacheMaxBytes: Int64?
     let dflashDraftWindowSize: Int?
-    let dflashDraftSinkSize: Int?
     let dflashBlockSize: Int?
     let dflashVerifyMode: String?
     // Experimental: native MTP (mlx-lm PR 990 / PR 15 monkey-patch)
@@ -256,16 +243,8 @@ struct ModelSettingsPatch: Encodable, Equatable, Sendable {
     var dflashDraftModel: String? = nil
     var dflashDraftQuantEnabled: Bool? = nil
     var dflashDraftQuantWeightBits: Int? = nil
-    var dflashDraftQuantActivationBits: Int? = nil
     var dflashDraftQuantGroupSize: Int? = nil
-    var dflashMaxCtx: Int? = nil
-    var dflashInMemoryCache: Bool? = nil
-    var dflashInMemoryCacheMaxEntries: Int? = nil
-    var dflashInMemoryCacheMaxBytes: Int64? = nil
-    var dflashSsdCache: Bool? = nil
-    var dflashSsdCacheMaxBytes: Int64? = nil
     var dflashDraftWindowSize: Int? = nil
-    var dflashDraftSinkSize: Int? = nil
     var dflashBlockSize: Int? = nil
     var dflashVerifyMode: String? = nil
     // Experimental: native MTP

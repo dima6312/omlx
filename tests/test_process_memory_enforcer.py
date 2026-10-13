@@ -829,53 +829,6 @@ class TestDisabledWhenCeilingZero:
         assert scheduler._memory_metal_cap_bytes == metal_b
         assert scheduler._memory_hot_cache_reserved_bytes == hot_reserved_b
 
-    async def test_propagates_hot_cache_used_for_usage_side_exclusion(
-        self, mock_engine_pool
-    ):
-        """Targets whose usage read is raw phys_footprint (the DFlash primary
-        guard) need the used-bytes counterpart of the reservation, or the
-        hot cache is charged twice: once in the reserved ceiling, once in
-        phys. The enforcer propagates the exact used figure each tick."""
-        metal_b = 16 * 1024**3
-        hot_used_b = 3 * 1024**3
-        enforcer = _make_enforcer(mock_engine_pool, ceiling=metal_b)
-        enforcer._hot_cache_reserved_bytes = lambda: hot_used_b + 512 * 1024**2
-        enforcer._hot_cache_used_bytes = lambda: hot_used_b
-        scheduler = MagicMock(spec=[])
-        scheduler._memory_hot_cache_used_bytes = 0
-        scheduler.batch_generator = None
-        engine = MagicMock(spec=[])
-        engine.scheduler = scheduler
-        entry = _make_entry("model-a", engine=engine)
-        mock_engine_pool._entries = {"model-a": entry}
-
-        enforcer._propagate_memory_limit()
-
-        assert scheduler._memory_hot_cache_used_bytes == hot_used_b
-
-    async def test_propagated_hot_cache_used_clamped_to_reservation(
-        self, mock_engine_pool
-    ):
-        """A transient overshoot (live hot-cache bytes past max_bytes) must not
-        exclude more usage than the reservation removed from the ceiling —
-        that would net-weaken the guard exactly under pressure."""
-        metal_b = 16 * 1024**3
-        reserved_b = 3 * 1024**3  # capped at max_bytes
-        enforcer = _make_enforcer(mock_engine_pool, ceiling=metal_b)
-        enforcer._hot_cache_reserved_bytes = lambda: reserved_b
-        enforcer._hot_cache_used_bytes = lambda: 5 * 1024**3  # overshoot
-        scheduler = MagicMock(spec=[])
-        scheduler._memory_hot_cache_used_bytes = 0
-        scheduler.batch_generator = None
-        engine = MagicMock(spec=[])
-        engine.scheduler = scheduler
-        entry = _make_entry("model-a", engine=engine)
-        mock_engine_pool._entries = {"model-a": entry}
-
-        enforcer._propagate_memory_limit()
-
-        assert scheduler._memory_hot_cache_used_bytes == reserved_b
-
 
 class TestPrefillMemoryGuardToggle:
     """Tests for prefill_memory_guard setter and Metal limit management."""
@@ -2260,23 +2213,6 @@ class TestUnresolvableSchedulerWarning:
         ]
         assert warnings == []
 
-    def test_no_warning_for_dflash_without_fallback(self, enforcer, caplog):
-        """DFlash normal mode has no scheduler until fallback is started."""
-
-        class DFlashEngine:
-            _fallback_engine = None
-
-        entry = _make_entry("model-dflash", engine=DFlashEngine())
-        enforcer._engine_pool._entries = {"model-dflash": entry}
-
-        with caplog.at_level("WARNING", logger="omlx.process_memory_enforcer"):
-            enforcer._propagate_memory_limit()
-
-        warnings = [
-            r for r in caplog.records if "could not resolve scheduler" in r.getMessage()
-        ]
-        assert warnings == []
-
 
 class TestStoreCacheCapWalk:
     """Tests for _walk_store_cache_caps — store-cache gate adjustment (#1383)."""
@@ -2836,45 +2772,10 @@ class TestTwoWatermarkPressureLevels:
         assert abs(status["utilization"] - 0.88) < 0.01
 
 
-class TestDFlashGuardPropagation:
-    """The enforcer must reach DFlash's primary-mode guard target.
+class TestResolveScheduler:
+    """Scheduler resolution for engines that expose ``.scheduler`` directly."""
 
-    DFlash bypasses the scheduler: in primary mode it exposes a lightweight
-    ``_prefill_guard``; in fallback mode its ``scheduler`` property resolves
-    the fallback engine's real scheduler (covered by test_dflash_engine.py).
-    Without the ``_prefill_guard`` arm in ``_resolve_scheduler`` the watermarks
-    never reach a primary-mode DFlash and the prefill guard stays dead.
-    """
-
-    def test_resolves_primary_guard(self, enforcer):
-        guard = MagicMock(spec=[])
-        engine = MagicMock(spec=["_prefill_guard"])
-        engine._prefill_guard = guard
-        entry = _make_entry("dflash", engine=engine)
-        enforcer._engine_pool._entries = {"dflash": entry}
-
-        assert enforcer._resolve_scheduler(entry) is guard
-
-        enforcer._propagate_memory_limit()
-        assert guard._memory_hard_limit_bytes == 10 * 1024**3
-        assert guard._prefill_memory_guard == enforcer._prefill_memory_guard
-
-    def test_dflash_primary_does_not_warn(self, enforcer, caplog):
-        engine = MagicMock(spec=["_prefill_guard"])
-        engine._prefill_guard = MagicMock(spec=[])
-        entry = _make_entry("dflash", engine=engine)
-        enforcer._engine_pool._entries = {"dflash": entry}
-
-        with caplog.at_level("WARNING", logger="omlx.process_memory_enforcer"):
-            enforcer._propagate_memory_limit()
-
-        assert not [
-            r for r in caplog.records if "could not resolve scheduler" in r.message
-        ]
-
-    def test_non_dflash_resolution_unchanged(self, enforcer):
-        """A standard engine with a direct ``.scheduler`` still resolves via the
-        existing chain — the DFlash arm must not interfere."""
+    def test_direct_scheduler_resolves(self, enforcer):
         scheduler = MagicMock(spec=[])
         engine = MagicMock(spec=["scheduler"])
         engine.scheduler = scheduler

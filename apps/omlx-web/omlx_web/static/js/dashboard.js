@@ -58,16 +58,8 @@
         'dflash_draft_model',
         'dflash_draft_quant_enabled',
         'dflash_draft_quant_weight_bits',
-        'dflash_draft_quant_activation_bits',
         'dflash_draft_quant_group_size',
-        'dflash_max_ctx',
-        'dflash_in_memory_cache',
-        'dflash_in_memory_cache_max_entries',
-        'dflash_in_memory_cache_max_bytes',
-        'dflash_ssd_cache',
-        'dflash_ssd_cache_max_bytes',
         'dflash_draft_window_size',
-        'dflash_draft_sink_size',
         'dflash_block_size',
         'dflash_verify_mode',
         'mtp_enabled',
@@ -2207,25 +2199,12 @@
                     dflash_draft_model: s.dflash_draft_model || '',
                     dflash_draft_quant_enabled: s.dflash_draft_quant_enabled || false,
                     dflash_draft_quant_weight_bits: s.dflash_draft_quant_weight_bits || 4,
-                    dflash_draft_quant_activation_bits: s.dflash_draft_quant_activation_bits || 16,
                     dflash_draft_quant_group_size: s.dflash_draft_quant_group_size || 64,
-                    dflash_max_ctx: s.dflash_max_ctx ?? null,
-                    dflash_in_memory_cache: s.dflash_in_memory_cache !== false,
-                    dflash_in_memory_cache_max_entries: s.dflash_in_memory_cache_max_entries || 4,
-                    dflash_in_memory_cache_max_gib: s.dflash_in_memory_cache_max_bytes
-                        ? Math.round(s.dflash_in_memory_cache_max_bytes / (1024 ** 3))
-                        : 8,
-                    dflash_ssd_cache: s.dflash_ssd_cache || false,
-                    dflash_ssd_cache_max_gib: s.dflash_ssd_cache_max_bytes
-                        ? Math.round(s.dflash_ssd_cache_max_bytes / (1024 ** 3))
-                        : 20,
                     dflash_draft_window_size: s.dflash_draft_window_size ?? null,
-                    dflash_draft_sink_size: s.dflash_draft_sink_size ?? 0,
                     dflash_block_size: s.dflash_block_size ?? null,
                     dflash_verify_mode: s.dflash_verify_mode || 'adaptive',
                     dflash_compatible: model?.dflash_compatible !== false,
                     dflash_compatibility_reason: model?.dflash_compatibility_reason || '',
-                    dflash_ssd_cache_available: !!model?.dflash_ssd_cache_available,
                     mtp_enabled: s.mtp_enabled || false,
                     mtp_adaptive_max_depth: [3, 4, 5, 6].includes(s.mtp_adaptive_max_depth)
                         ? String(s.mtp_adaptive_max_depth) : '3',
@@ -3265,42 +3244,14 @@
                                 dflash_draft_quant_weight_bits: this.modelSettings.dflash_enabled && this.modelSettings.dflash_draft_quant_enabled
                                     ? parseInt(this.modelSettings.dflash_draft_quant_weight_bits)
                                     : null,
-                                dflash_draft_quant_activation_bits: this.modelSettings.dflash_enabled && this.modelSettings.dflash_draft_quant_enabled
-                                    ? parseInt(this.modelSettings.dflash_draft_quant_activation_bits)
-                                    : null,
                                 dflash_draft_quant_group_size: this.modelSettings.dflash_enabled && this.modelSettings.dflash_draft_quant_enabled
                                     ? parseInt(this.modelSettings.dflash_draft_quant_group_size)
                                     : null,
-                                dflash_max_ctx: this.modelSettings.dflash_enabled && this.modelSettings.dflash_max_ctx
-                                    ? parseInt(this.modelSettings.dflash_max_ctx)
-                                    : null,
-                                dflash_in_memory_cache: this.modelSettings.dflash_enabled
-                                    ? !!this.modelSettings.dflash_in_memory_cache
-                                    : true,
-                                dflash_in_memory_cache_max_entries: this.modelSettings.dflash_enabled
-                                    ? (parseInt(this.modelSettings.dflash_in_memory_cache_max_entries) || 4)
-                                    : 4,
-                                dflash_in_memory_cache_max_bytes: this.modelSettings.dflash_enabled
-                                    ? Math.max(1, parseInt(this.modelSettings.dflash_in_memory_cache_max_gib) || 8) * (1024 ** 3)
-                                    : 8 * (1024 ** 3),
-                                dflash_ssd_cache: this.modelSettings.dflash_enabled
-                                    && !!this.modelSettings.dflash_in_memory_cache
-                                    && !!this.modelSettings.dflash_ssd_cache_available
-                                    && !!this.modelSettings.dflash_ssd_cache,
-                                dflash_ssd_cache_max_bytes: this.modelSettings.dflash_enabled
-                                    ? Math.max(1, parseInt(this.modelSettings.dflash_ssd_cache_max_gib) || 20) * (1024 ** 3)
-                                    : 20 * (1024 ** 3),
                                 // Long-context tuning. Empty → oMLX default.
                                 dflash_draft_window_size: this.modelSettings.dflash_enabled
                                     && this.modelSettings.dflash_draft_window_size
                                     ? parseInt(this.modelSettings.dflash_draft_window_size)
                                     : null,
-                                dflash_draft_sink_size: this.modelSettings.dflash_enabled
-                                    && this.modelSettings.dflash_draft_sink_size !== null
-                                    && this.modelSettings.dflash_draft_sink_size !== undefined
-                                    && this.modelSettings.dflash_draft_sink_size !== ''
-                                    ? parseInt(this.modelSettings.dflash_draft_sink_size)
-                                    : 0,
                                 dflash_block_size: this.modelSettings.dflash_enabled
                                     && this.modelSettings.dflash_block_size
                                     ? parseInt(this.modelSettings.dflash_block_size)
@@ -3367,16 +3318,8 @@
                                     dflash_draft_model: null,
                                     dflash_draft_quant_enabled: false,
                                     dflash_draft_quant_weight_bits: null,
-                                    dflash_draft_quant_activation_bits: null,
                                     dflash_draft_quant_group_size: null,
-                                    dflash_max_ctx: null,
-                                    dflash_in_memory_cache: true,
-                                    dflash_in_memory_cache_max_entries: 4,
-                                    dflash_in_memory_cache_max_bytes: 8 * (1024 ** 3),
-                                    dflash_ssd_cache: false,
-                                    dflash_ssd_cache_max_bytes: 20 * (1024 ** 3),
                                     dflash_draft_window_size: null,
-                                    dflash_draft_sink_size: null,
                                     dflash_block_size: null,
                                     dflash_verify_mode: null,
                                     mtp_enabled: false,
@@ -3641,16 +3584,8 @@
                         this.modelSettings.dflash_draft_model = null;
                         this.modelSettings.dflash_draft_quant_enabled = false;
                         this.modelSettings.dflash_draft_quant_weight_bits = null;
-                        this.modelSettings.dflash_draft_quant_activation_bits = null;
                         this.modelSettings.dflash_draft_quant_group_size = null;
-                        this.modelSettings.dflash_max_ctx = null;
-                        this.modelSettings.dflash_in_memory_cache = true;
-                        this.modelSettings.dflash_in_memory_cache_max_entries = 4;
-                        this.modelSettings.dflash_in_memory_cache_max_gib = 8;
-                        this.modelSettings.dflash_ssd_cache = false;
-                        this.modelSettings.dflash_ssd_cache_max_gib = 20;
                         this.modelSettings.dflash_draft_window_size = null;
-                        this.modelSettings.dflash_draft_sink_size = 0;
                         this.modelSettings.dflash_block_size = null;
                         this.modelSettings.dflash_verify_mode = 'adaptive';
                         this.modelSettings.mtp_enabled = false;
@@ -4576,31 +4511,6 @@
                 if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
                 if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
                 return String(n);
-            },
-
-            formatDFlashSessionStats(totals) {
-                if (!totals || totals.requests <= 1) return '';
-
-                const parts = [];
-                if (totals.speculative_requests > 0) {
-                    parts.push(
-                        Math.round((totals.acceptance_ratio || 0) * 100) + '% ' +
-                        window.t('status.active_models.dflash_draft_share'),
-                        (totals.accepted_draft_tokens_per_cycle || 0).toFixed(2) + ' ' +
-                        window.t('status.active_models.dflash_accepted_draft_per_cycle'),
-                        (totals.tokens_per_cycle || 0).toFixed(2) + ' ' +
-                        window.t('status.active_models.dflash_output_per_cycle'),
-                        totals.speculative_requests + ' ' +
-                        window.t('status.active_models.dflash_speculative_requests'),
-                    );
-                }
-                if (totals.fallback_requests > 0) {
-                    parts.push(
-                        totals.fallback_requests + ' ' +
-                        window.t('status.active_models.dflash_fallback_requests'),
-                    );
-                }
-                return window.t('status.active_models.dflash_session') + ': ' + parts.join(' · ');
             },
 
             formatDurationShort(seconds) {

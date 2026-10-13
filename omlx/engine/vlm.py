@@ -1861,7 +1861,7 @@ class VLMBatchedEngine(BaseEngine):
         # Phase 2A: attached but not yet wired into the decode path.
         self._vlm_mtp_drafter: Any | None = None
         # Holds the DFlash block drafter attached to Lightning MTP when
-        # dflash_enabled routes here instead of DFlashEngine.
+        # dflash_enabled.
         self._dflash_drafter: Any | None = None
         self._diffusion_family: str | None = None
         self._diffusion_lock = asyncio.Lock()

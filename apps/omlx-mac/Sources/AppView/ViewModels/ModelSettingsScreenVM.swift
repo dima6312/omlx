@@ -50,12 +50,9 @@ final class ModelSettingsScreenVM {
         case qwen35AnePrefillCpuThreads, qwen35AnePrefillCpuSharedResource
         case indexCacheEnabled, indexCacheFreq
         case specprefillEnabled, specprefillDraftModel, specprefillKeepPct, specprefillThreshold
-        case dflashEnabled, dflashDraftModel, dflashMaxCtx
-        case dflashDraftQuantEnabled, dflashDraftQuantWeightBits
-        case dflashDraftQuantActivationBits, dflashDraftQuantGroupSize
-        case dflashVerifyMode, dflashDraftWindowSize, dflashDraftSinkSize, dflashBlockSize
-        case dflashInMemoryCache, dflashInMemoryCacheGib, dflashInMemoryCacheMaxEntries
-        case dflashSsdCache, dflashSsdCacheGib
+        case dflashEnabled, dflashDraftModel
+        case dflashDraftQuantEnabled, dflashDraftQuantWeightBits, dflashDraftQuantGroupSize
+        case dflashVerifyMode, dflashDraftWindowSize, dflashBlockSize
         case mtpEnabled, mtpAdaptiveMaxDepth
         case vlmMtpEnabled, vlmMtpDraftModel, vlmMtpDraftBlockSize
     }
@@ -157,20 +154,6 @@ final class ModelSettingsScreenVM {
         ]
     }
 
-    static var dflashDraftQuantActivationBitsOptions: [(String, String)] {
-        [
-            ("", String(localized: "settings.dflash.quant.activation.default",
-                        defaultValue: "default",
-                        comment: "DFlash draft quantization activation bits — use server default")),
-            ("16", String(localized: "settings.dflash.quant.activation.16",
-                          defaultValue: "16-bit",
-                          comment: "DFlash draft quantization activation bits option")),
-            ("32", String(localized: "settings.dflash.quant.activation.32",
-                          defaultValue: "32-bit",
-                          comment: "DFlash draft quantization activation bits option")),
-        ]
-    }
-
     static var dflashDraftQuantGroupSizeOptions: [(String, String)] {
         [
             ("", String(localized: "settings.dflash.quant.group.default",
@@ -204,12 +187,9 @@ final class ModelSettingsScreenVM {
             ("dflash", String(localized: "settings.dflash.verify_mode.dflash",
                               defaultValue: "dflash",
                               comment: "DFlash verify mode: standard dflash verifier")),
-            ("ddtree", String(localized: "settings.dflash.verify_mode.ddtree",
-                              defaultValue: "ddtree",
-                              comment: "DFlash verify mode: DDTree verifier")),
             ("off", String(localized: "settings.dflash.verify_mode.off",
                            defaultValue: "off",
-                           comment: "DFlash verify mode: disable speculative verify")),
+                           comment: "DFlash verify mode: always verify the whole block")),
         ]
     }
 
@@ -350,18 +330,10 @@ final class ModelSettingsScreenVM {
     var dflashDraftModel: String = ""
     var dflashDraftQuantEnabled: Bool = false
     var dflashDraftQuantWeightBits: String = "4"
-    var dflashDraftQuantActivationBits: String = ""
     var dflashDraftQuantGroupSize: String = ""
-    var dflashMaxCtx: String = ""
     var dflashVerifyMode: String = ""
     var dflashDraftWindowSize: String = ""
-    var dflashDraftSinkSize: String = "0"
     var dflashBlockSize: String = ""
-    var dflashInMemoryCache: Bool = false
-    var dflashInMemoryCacheGib: String = "8"
-    var dflashInMemoryCacheMaxEntries: String = "4"
-    var dflashSsdCache: Bool = false
-    var dflashSsdCacheGib: String = "20"
 
     // Experimental: native MTP
     var mtpEnabled: Bool = false
@@ -516,19 +488,11 @@ final class ModelSettingsScreenVM {
             return true
         case .specprefillKeepPct, .specprefillThreshold:
             return true
-        case .dflashEnabled, .dflashDraftModel, .dflashMaxCtx:
+        case .dflashEnabled, .dflashDraftModel:
             return true
-        case .dflashDraftQuantEnabled, .dflashDraftQuantWeightBits:
+        case .dflashDraftQuantEnabled, .dflashDraftQuantWeightBits, .dflashDraftQuantGroupSize:
             return true
-        case .dflashDraftQuantActivationBits, .dflashDraftQuantGroupSize:
-            return true
-        case .dflashVerifyMode, .dflashDraftWindowSize, .dflashDraftSinkSize, .dflashBlockSize:
-            return true
-        case .dflashInMemoryCache, .dflashInMemoryCacheGib:
-            return true
-        case .dflashInMemoryCacheMaxEntries:
-            return true
-        case .dflashSsdCache, .dflashSsdCacheGib:
+        case .dflashVerifyMode, .dflashDraftWindowSize, .dflashBlockSize:
             return true
         case .mtpEnabled, .mtpAdaptiveMaxDepth, .vlmMtpEnabled, .vlmMtpDraftModel:
             return true
@@ -688,20 +652,10 @@ final class ModelSettingsScreenVM {
                 self.dflashDraftModel = s?.dflashDraftModel ?? ""
                 self.dflashDraftQuantEnabled = s?.dflashDraftQuantEnabled ?? false
                 self.dflashDraftQuantWeightBits = s?.dflashDraftQuantWeightBits.map(String.init) ?? "4"
-                self.dflashDraftQuantActivationBits = s?.dflashDraftQuantActivationBits.map(String.init) ?? ""
                 self.dflashDraftQuantGroupSize = s?.dflashDraftQuantGroupSize.map(String.init) ?? ""
-                self.dflashMaxCtx = s?.dflashMaxCtx.map(String.init) ?? ""
                 self.dflashVerifyMode = s?.dflashVerifyMode ?? ""
                 self.dflashDraftWindowSize = s?.dflashDraftWindowSize.map(String.init) ?? ""
-                self.dflashDraftSinkSize = s?.dflashDraftSinkSize.map(String.init) ?? "0"
                 self.dflashBlockSize = s?.dflashBlockSize.map(String.init) ?? ""
-                self.dflashInMemoryCache = s?.dflashInMemoryCache ?? false
-                self.dflashInMemoryCacheGib = DflashByteSize.bytesToGib(s?.dflashInMemoryCacheMaxBytes)
-                    .map(String.init) ?? "8"
-                self.dflashInMemoryCacheMaxEntries = s?.dflashInMemoryCacheMaxEntries.map(String.init) ?? "4"
-                self.dflashSsdCache = s?.dflashSsdCache ?? false
-                self.dflashSsdCacheGib = DflashByteSize.bytesToGib(s?.dflashSsdCacheMaxBytes)
-                    .map(String.init) ?? "20"
                 self.mtpEnabled = s?.mtpEnabled ?? false
                 self.mtpAdaptiveMaxDepth = s?.mtpAdaptiveMaxDepth.flatMap { (3...6).contains($0) ? String($0) : nil } ?? "3"
                 self.vlmMtpEnabled = s?.vlmMtpEnabled ?? false
@@ -919,35 +873,15 @@ final class ModelSettingsScreenVM {
             patch.dflashDraftQuantEnabled = dflashDraftQuantEnabled
             if !dflashDraftQuantEnabled {
                 patch.dflashDraftQuantWeightBits = nil
-                patch.dflashDraftQuantActivationBits = nil
                 patch.dflashDraftQuantGroupSize = nil
             }
         case .dflashDraftQuantWeightBits:
             patch.dflashDraftQuantWeightBits = Int(dflashDraftQuantWeightBits)
-        case .dflashDraftQuantActivationBits:
-            patch.dflashDraftQuantActivationBits = Int(dflashDraftQuantActivationBits)
         case .dflashDraftQuantGroupSize:
             patch.dflashDraftQuantGroupSize = Int(dflashDraftQuantGroupSize)
-        case .dflashMaxCtx:            patch.dflashMaxCtx = Int(dflashMaxCtx)
         case .dflashVerifyMode:        patch.dflashVerifyMode = dflashVerifyMode.isEmpty ? nil : dflashVerifyMode
         case .dflashDraftWindowSize:   patch.dflashDraftWindowSize = Int(dflashDraftWindowSize)
-        case .dflashDraftSinkSize:     patch.dflashDraftSinkSize = Int(dflashDraftSinkSize)
         case .dflashBlockSize:         patch.dflashBlockSize = Int(dflashBlockSize)
-        case .dflashInMemoryCache:
-            patch.dflashInMemoryCache = dflashInMemoryCache
-            if !dflashInMemoryCache {
-                // Mirror the HTML editor: turning the L1 cache off also
-                // disables the L2 (SSD) sub-toggle.
-                dflashSsdCache = false
-                patch.dflashSsdCache = false
-            }
-        case .dflashInMemoryCacheGib:
-            patch.dflashInMemoryCacheMaxBytes = DflashByteSize.gibToBytes(Int(dflashInMemoryCacheGib))
-        case .dflashInMemoryCacheMaxEntries:
-            patch.dflashInMemoryCacheMaxEntries = Int(dflashInMemoryCacheMaxEntries)
-        case .dflashSsdCache:          patch.dflashSsdCache = dflashSsdCache
-        case .dflashSsdCacheGib:
-            patch.dflashSsdCacheMaxBytes = DflashByteSize.gibToBytes(Int(dflashSsdCacheGib))
         case .mtpEnabled, .mtpAdaptiveMaxDepth:
             patch.mtpEnabled = mtpEnabled
             patch.mtpAdaptiveMaxDepth = Int(mtpAdaptiveMaxDepth) ?? 3
@@ -1383,27 +1317,13 @@ final class ModelSettingsScreenVM {
                 putBool(ProfileSettingsKey.dflashDraftQuantEnabled, dflashDraftQuantEnabled)
                 if dflashDraftQuantEnabled {
                     putInt(ProfileSettingsKey.dflashDraftQuantWeightBits, dflashDraftQuantWeightBits)
-                    putInt(ProfileSettingsKey.dflashDraftQuantActivationBits, dflashDraftQuantActivationBits)
                     putInt(ProfileSettingsKey.dflashDraftQuantGroupSize, dflashDraftQuantGroupSize)
                 }
-                putInt(ProfileSettingsKey.dflashMaxCtx, dflashMaxCtx)
                 if !dflashVerifyMode.isEmpty {
                     out[ProfileSettingsKey.dflashVerifyMode] = AnyCodable(dflashVerifyMode)
                 }
                 putInt(ProfileSettingsKey.dflashDraftWindowSize, dflashDraftWindowSize)
-                putInt(ProfileSettingsKey.dflashDraftSinkSize, dflashDraftSinkSize)
                 putInt(ProfileSettingsKey.dflashBlockSize, dflashBlockSize)
-                putBool(ProfileSettingsKey.dflashInMemoryCache, dflashInMemoryCache)
-                if dflashInMemoryCache {
-                    if let bytes = DflashByteSize.gibToBytes(Int(dflashInMemoryCacheGib)) {
-                        out[ProfileSettingsKey.dflashInMemoryCacheMaxBytes] = AnyCodable(Int(bytes))
-                    }
-                    putInt(ProfileSettingsKey.dflashInMemoryCacheMaxEntries, dflashInMemoryCacheMaxEntries)
-                }
-                putBool(ProfileSettingsKey.dflashSsdCache, dflashSsdCache)
-                if dflashSsdCache, let bytes = DflashByteSize.gibToBytes(Int(dflashSsdCacheGib)) {
-                    out[ProfileSettingsKey.dflashSsdCacheMaxBytes] = AnyCodable(Int(bytes))
-                }
             }
             putBool(ProfileSettingsKey.mtpEnabled, mtpEnabled)
             if mtpEnabled {

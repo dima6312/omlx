@@ -100,9 +100,11 @@ class DFlashDrafter:
         block_size: int,
         source_path: str,
         adaptive: bool = True,
+        window_size: int | None = None,
     ):
         self.model = model
         self.source_path = source_path
+        self._window_size = window_size
         self.target_layer_ids: list[int] = [
             int(i) for i in model.config.target_layer_ids
         ]
@@ -136,6 +138,8 @@ class DFlashDrafter:
     @property
     def window(self) -> int:
         """Context tokens the drafter attends to; older captures are dropped."""
+        if self._window_size:
+            return int(self._window_size)
         config = self.model.config
         explicit = getattr(config, "draft_window_size", None)
         if explicit:

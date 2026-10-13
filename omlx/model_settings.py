@@ -270,31 +270,20 @@ class ModelSettings:
             Qwen3 and Laguna targets, and GLM-5.3, Gemma 4 and Muse Glimmer
             VLM targets, draft inside the batched engine (Lightning MTP
             verify path with greedy or sampled acceptance; Qwen3, Laguna,
-            Gemma 4 and Muse Glimmer speculate for single requests only);
-            MiMo V2 uses the single-stream DFlash engine, which alone honours
-            the max_ctx, cache, window and sink settings below.
+            Gemma 4 and Muse Glimmer speculate for single requests only).
+            Other model types load without DFlash.
         dflash_draft_model: Path/repo for DFlash draft checkpoint.
         dflash_draft_quant_enabled: Enable draft model quantization.
         dflash_draft_quant_weight_bits: Quantization weight bits (2, 4, 8).
-        dflash_draft_quant_activation_bits: Quantization activation bits (16, 32).
         dflash_draft_quant_group_size: Quantization group size (32, 64, 128).
-        dflash_max_ctx: Token threshold to fall back to BatchedEngine (None = unlimited).
-        dflash_in_memory_cache: Enable DFlash L1 (RAM) prefix cache.
-        dflash_in_memory_cache_max_entries: L1 cache max entries (default 4, matches dflash balanced profile).
-        dflash_in_memory_cache_max_bytes: L1 cache byte budget.
-        dflash_ssd_cache: Enable DFlash L2 (SSD) prefix cache spill (uses omlx SSD cache dir).
-        dflash_ssd_cache_max_bytes: L2 (SSD) disk budget; dflash evicts oldest entries when exceeded.
-        dflash_draft_window_size: Draft model sliding-attention window
-            (None = use the draft checkpoint's sliding_window when present).
-            Helps stabilise acceptance rate on long-context prompts.
-        dflash_draft_sink_size: Attention-sink tokens always kept regardless of window
-            (default 0, disabling sink tokens).
+        dflash_draft_window_size: Context tokens the drafter attends to
+            (None = the draft checkpoint's sliding_window, else 2048).
         dflash_block_size: Draft/verify tokens per cycle (None = checkpoint default).
-        dflash_verify_mode: Verifier algorithm — "dflash", "adaptive", "ddtree", or "off"
-            (None = "adaptive"). In the batched engine "adaptive" verifies the
-            number of drafts per cycle that the Lightning MTP depth controllers
-            pick from measured cost and acceptance, "dflash" and "off" verify
-            the whole block, and "ddtree" falls back to "adaptive".
+        dflash_verify_mode: "adaptive", "dflash" or "off" (None = "adaptive").
+            "adaptive" verifies the number of drafts per cycle that the
+            Lightning MTP depth controllers pick from measured cost and
+            acceptance; "dflash" and "off" verify the whole block. A stored
+            "ddtree" from older versions loads as "adaptive".
         mtp_enabled: Enable native multi-token prediction (mlx-lm PR 990 / PR 15 monkey-patch).
             When True, BatchGenerator uses MTP draft+verify for singleton decode and
             for multi-row decode batches whose cache positions are aligned. Unaligned
@@ -428,30 +417,11 @@ class ModelSettings:
     dflash_draft_model: Optional[str] = None  # Path/repo for DFlash draft checkpoint
     dflash_draft_quant_enabled: Optional[bool] = None
     dflash_draft_quant_weight_bits: Optional[int] = None  # 2, 4, 8
-    dflash_draft_quant_activation_bits: Optional[int] = None  # 16, 32
     dflash_draft_quant_group_size: Optional[int] = None  # 32, 64, 128
-    dflash_max_ctx: Optional[int] = (
-        None  # None = unlimited; trigger BatchedEngine fallback when prompt_len >= this
-    )
-    # DFlash prefix cache (private to dflash; separate from omlx tiered cache because
-    # snapshots include draft model GDN state and target hidden chunks omlx never tracks)
-    dflash_in_memory_cache: bool = True
-    dflash_in_memory_cache_max_entries: int = (
-        4  # Matches dflash balanced profile default
-    )
-    dflash_in_memory_cache_max_bytes: int = (
-        8 * 1024 * 1024 * 1024
-    )  # 8 GiB (balanced profile default)
-    dflash_ssd_cache: bool = (
-        False  # Requires in-memory cache and an omlx paged SSD cache dir
-    )
-    dflash_ssd_cache_max_bytes: int = 20 * 1024 * 1024 * 1024  # 20 GiB L2 disk budget
-    # DFlash runtime tuning knobs. None window size uses the draft checkpoint's
-    # sliding_window when present; sink size defaults to no attention-sink tokens.
+    # None uses the draft checkpoint's sliding_window.
     dflash_draft_window_size: Optional[int] = None
-    dflash_draft_sink_size: Optional[int] = 0
     dflash_block_size: Optional[int] = None
-    dflash_verify_mode: Optional[str] = None  # "dflash" | "adaptive" | "ddtree" | "off"
+    dflash_verify_mode: Optional[str] = None  # "adaptive" | "dflash" | "off"
 
     # Lightning MTP uses the embedded head for single and concurrent requests.
     # Equal-depth rows share target verification when supported by the backbone;
@@ -516,6 +486,9 @@ class ModelSettings:
     def __post_init__(self) -> None:
         # Profiles retain raw JSON types; engine signatures use repr().
         self.turboquant_kv_bits = normalize_turboquant_kv_bits(self.turboquant_kv_bits)
+        # The ddtree verify mode was removed; stored settings run as adaptive.
+        if self.dflash_verify_mode == "ddtree":
+            self.dflash_verify_mode = "adaptive"
         if self.qwen35_oq_a8_enabled and self.qwen35_oq_a8_min_tokens < 1:
             raise ValueError("qwen35_oq_a8_min_tokens must be at least 1")
         # Both accelerate the same Qwen3.5 prefill projections by wrapping

@@ -72,7 +72,6 @@
 		8BB000000000000000000003 /* HFTaskDTO.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CC000000000000000000003 /* HFTaskDTO.swift */; };
 		8BB000000000000000000004 /* ModelSettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CC000000000000000000004 /* ModelSettingsScreen.swift */; };
 		8BB000000000000000000005 /* ChatTemplateKwargs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CC000000000000000000005 /* ChatTemplateKwargs.swift */; };
-		8BB000000000000000000006 /* DflashByteSize.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CC000000000000000000006 /* DflashByteSize.swift */; };
 		8BB000000000000000000007 /* SystemMetricsPoller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CC000000000000000000007 /* SystemMetricsPoller.swift */; };
 		8BB000000000000000000008 /* ProfileViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CC000000000000000000008 /* ProfileViews.swift */; };
 		8BB000000000000000000009 /* ProfileWorkingState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CC000000000000000000009 /* ProfileWorkingState.swift */; };
@@ -111,7 +110,6 @@
 		DBB000000000000000000005 /* SamplingValidatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCC000000000000000000005 /* SamplingValidatorTests.swift */; };
 		DBB000000000000000000006 /* APIKeyGeneratorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCC000000000000000000006 /* APIKeyGeneratorTests.swift */; };
 		DBB000000000000000000007 /* ChatTemplateKwargsCodecTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCC000000000000000000007 /* ChatTemplateKwargsCodecTests.swift */; };
-		DBB000000000000000000008 /* DflashByteSizeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCC000000000000000000008 /* DflashByteSizeTests.swift */; };
 		DBB000000000000000000009 /* GlobalSettingsSamplingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCC000000000000000000009 /* GlobalSettingsSamplingTests.swift */; };
 		DBB00000000000000000000A /* ProfileScopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCC00000000000000000000A /* ProfileScopeTests.swift */; };
 		DBB00000000000000000000B /* SystemMetricsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCC00000000000000000000B /* SystemMetricsTests.swift */; };
@@ -217,7 +215,6 @@
 		8CC000000000000000000003 /* HFTaskDTO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HFTaskDTO.swift; sourceTree = "<group>"; };
 		8CC000000000000000000004 /* ModelSettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSettingsScreen.swift; sourceTree = "<group>"; };
 		8CC000000000000000000005 /* ChatTemplateKwargs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTemplateKwargs.swift; sourceTree = "<group>"; };
-		8CC000000000000000000006 /* DflashByteSize.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DflashByteSize.swift; sourceTree = "<group>"; };
 		8CC000000000000000000007 /* SystemMetricsPoller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemMetricsPoller.swift; sourceTree = "<group>"; };
 		8CC000000000000000000008 /* ProfileViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileViews.swift; sourceTree = "<group>"; };
 		8CC000000000000000000009 /* ProfileWorkingState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileWorkingState.swift; sourceTree = "<group>"; };
@@ -256,7 +253,6 @@
 		DCC000000000000000000005 /* SamplingValidatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SamplingValidatorTests.swift; sourceTree = "<group>"; };
 		DCC000000000000000000006 /* APIKeyGeneratorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIKeyGeneratorTests.swift; sourceTree = "<group>"; };
 		DCC000000000000000000007 /* ChatTemplateKwargsCodecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTemplateKwargsCodecTests.swift; sourceTree = "<group>"; };
-		DCC000000000000000000008 /* DflashByteSizeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DflashByteSizeTests.swift; sourceTree = "<group>"; };
 		DCC000000000000000000009 /* GlobalSettingsSamplingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSettingsSamplingTests.swift; sourceTree = "<group>"; };
 		DCC00000000000000000000A /* ProfileScopeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileScopeTests.swift; sourceTree = "<group>"; };
 		DCC00000000000000000000B /* SystemMetricsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemMetricsTests.swift; sourceTree = "<group>"; };
@@ -330,7 +326,6 @@
 				DCC000000000000000000005 /* SamplingValidatorTests.swift */,
 				DCC000000000000000000006 /* APIKeyGeneratorTests.swift */,
 				DCC000000000000000000007 /* ChatTemplateKwargsCodecTests.swift */,
-				DCC000000000000000000008 /* DflashByteSizeTests.swift */,
 				DCC000000000000000000009 /* GlobalSettingsSamplingTests.swift */,
 				DCC00000000000000000000A /* ProfileScopeTests.swift */,
 				DCC00000000000000000000B /* SystemMetricsTests.swift */,
@@ -555,7 +550,6 @@
 			isa = PBXGroup;
 			children = (
 				8CC000000000000000000005 /* ChatTemplateKwargs.swift */,
-				8CC000000000000000000006 /* DflashByteSize.swift */,
 				8CC000000000000000000009 /* ProfileWorkingState.swift */,
 				9CC000000000000000000006 /* PresetBundleStore.swift */,
 				8CC000000000000000000007 /* SystemMetricsPoller.swift */,
@@ -775,7 +769,6 @@
 				AACFCBE42FE115A200B224C0 /* ProgressBar.swift in Sources */,
 				8BB000000000000000000004 /* ModelSettingsScreen.swift in Sources */,
 				8BB000000000000000000005 /* ChatTemplateKwargs.swift in Sources */,
-				8BB000000000000000000006 /* DflashByteSize.swift in Sources */,
 				8BB000000000000000000007 /* SystemMetricsPoller.swift in Sources */,
 				8BB000000000000000000008 /* ProfileViews.swift in Sources */,
 				8BB000000000000000000009 /* ProfileWorkingState.swift in Sources */,
@@ -801,7 +794,6 @@
 				DBB000000000000000000005 /* SamplingValidatorTests.swift in Sources */,
 				DBB000000000000000000006 /* APIKeyGeneratorTests.swift in Sources */,
 				DBB000000000000000000007 /* ChatTemplateKwargsCodecTests.swift in Sources */,
-				DBB000000000000000000008 /* DflashByteSizeTests.swift in Sources */,
 				DBB000000000000000000009 /* GlobalSettingsSamplingTests.swift in Sources */,
 				DBB00000000000000000000A /* ProfileScopeTests.swift in Sources */,
 				DBB00000000000000000000B /* SystemMetricsTests.swift in Sources */,

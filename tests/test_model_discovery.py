@@ -60,7 +60,14 @@ class TestIsHelperConfigModelType:
 
     @pytest.mark.parametrize(
         "config_model_type",
-        ["gemma4_assistant", "qwen3_5_mtp", "foo_mtp", "bar_assistant", "QWEN3_5_MTP"],
+        [
+            "gemma4_assistant",
+            "muse_glimmer_assistant",
+            "qwen3_5_mtp",
+            "foo_mtp",
+            "bar_assistant",
+            "QWEN3_5_MTP",
+        ],
     )
     def test_helper_types(self, config_model_type):
         assert is_helper_config_model_type(config_model_type) is True

@@ -126,8 +126,7 @@ DECISION_SIDECAR_FILES = (
 # a plain model_type (e.g. ``qwen3``) and are only distinguishable by their
 # architecture name (``DFlashDraftModel``) or a drafter-only config block
 # (``dflash_config``). Keep these in sync with the drafter resolution in
-# engine_pool.py (~1498) and the dflash gate in engine/dflash.py when new
-# drafter families are added.
+# engine_pool.py when new drafter families are added.
 HELPER_CONFIG_MODEL_TYPE_SUFFIXES = ("_assistant", "_mtp")
 _HELPER_ARCH_TOKENS = ("draft", "assistant", "mtp")
 _HELPER_CONFIG_KEYS = ("dflash_config",)

@@ -1693,7 +1693,7 @@ private struct AccelerationSection: View {
                                   defaultValue: "Draft Quantization",
                                   comment: "Row label for the DFlash draft quantization toggle"),
                     sublabel: String(localized: "settings.experimental.dflash.draft_quant.sub",
-                                     defaultValue: "Enable quantization for the draft model (weight, activation bits & group size).",
+                                     defaultValue: "Enable quantization for the draft model (weight bits & group size).",
                                      comment: "Sublabel for the DFlash draft quantization toggle")) {
                     RowSwitch(isOn: vm.bindProfile($vm.dflashDraftQuantEnabled))
                 }
@@ -1707,15 +1707,6 @@ private struct AccelerationSection: View {
                             options: ModelSettingsScreenVM.dflashDraftQuantWeightBitsOptions
                         )
                     }
-                    Row(label: String(localized: "settings.experimental.dflash.draft_quant_activation.label",
-                                      defaultValue: "Activation Bits",
-                                      comment: "Row label for the DFlash draft quantization activation bits picker")) {
-                        Popup(
-                            selection: vm.bindProfile($vm.dflashDraftQuantActivationBits),
-                            width: .controlCompact,
-                            options: ModelSettingsScreenVM.dflashDraftQuantActivationBitsOptions
-                        )
-                    }
                     Row(label: String(localized: "settings.experimental.dflash.draft_quant_group.label",
                                       defaultValue: "Group Size",
                                       comment: "Row label for the DFlash draft quantization group size picker")) {
@@ -1726,23 +1717,11 @@ private struct AccelerationSection: View {
                         )
                     }
                 }
-                Row(label: String(localized: "settings.experimental.dflash.max_ctx.label",
-                                  defaultValue: "Max Context (fallback)",
-                                  comment: "Row label for the DFlash max-context fallback field"),
-                    sublabel: String(localized: "settings.experimental.dflash.max_ctx.sub",
-                                     defaultValue: "Prompts at or above this token count switch to BatchedEngine. Empty = unlimited.",
-                                     comment: "Sublabel describing the DFlash max-context fallback")) {
-                    TextInput(text: vm.bindProfile($vm.dflashMaxCtx),
-                              placeholder: String(localized: "settings.experimental.dflash.max_ctx.placeholder",
-                                                  defaultValue: "unlimited",
-                                                  comment: "Placeholder shown when DFlash max-context is unset (no cap)"),
-                              mono: true, suffix: "tk", width: .controlCompact)
-                }
                 Row(label: String(localized: "settings.experimental.dflash.verify_mode.label",
                                   defaultValue: "Verify Mode",
                                   comment: "Row label for the DFlash verifier algorithm picker"),
                     sublabel: String(localized: "settings.experimental.dflash.verify_mode.sub",
-                                     defaultValue: "Verifier algorithm. \"adaptive\" shrinks block size when acceptance drops; \"off\" disables speculative verify.",
+                                     defaultValue: "Verifier algorithm. \"adaptive\" picks how many drafts to verify each cycle from measured cost and acceptance; \"dflash\" and \"off\" verify the whole block.",
                                      comment: "Sublabel for the DFlash verify mode picker")) {
                     Popup(
                         selection: vm.bindProfile($vm.dflashVerifyMode),
@@ -1759,15 +1738,6 @@ private struct AccelerationSection: View {
                     TextInput(text: vm.bindProfile($vm.dflashDraftWindowSize),
                               placeholder: "2048", mono: true, width: .controlCompact)
                 }
-                Row(label: String(localized: "settings.experimental.dflash.sink_size.label",
-                                  defaultValue: "Draft Sink Size",
-                                  comment: "Row label for the DFlash attention-sink tokens field"),
-                    sublabel: String(localized: "settings.experimental.dflash.sink_size.sub",
-                                     defaultValue: "Attention-sink tokens always kept in the window. Empty = dflash default (0).",
-                                     comment: "Sublabel for the DFlash draft sink size field")) {
-                    TextInput(text: vm.bindProfile($vm.dflashDraftSinkSize),
-                              placeholder: "0", mono: true, width: .controlCompact)
-                }
                 Row(label: String(localized: "settings.experimental.dflash.block_size.label",
                                   defaultValue: "Runtime Block Size",
                                   comment: "Row label for the DFlash runtime block size field"),
@@ -1776,49 +1746,6 @@ private struct AccelerationSection: View {
                                      comment: "Sublabel for the DFlash runtime block size field")) {
                     TextInput(text: vm.bindProfile($vm.dflashBlockSize),
                               placeholder: "checkpoint", mono: true, width: .controlCompact)
-                }
-                Row(label: String(localized: "settings.experimental.dflash.mem_cache.label",
-                                  defaultValue: "DFlash in-memory cache",
-                                  comment: "Row label for the DFlash L1 in-memory cache toggle"),
-                    sublabel: String(localized: "settings.experimental.dflash.mem_cache.sub",
-                                     defaultValue: "DFlash L1 prefix snapshot cache in RAM.",
-                                     comment: "Sublabel for the DFlash L1 in-memory cache toggle")) {
-                    HStack(spacing: 8) {
-                        if vm.dflashInMemoryCache {
-                            TextInput(text: vm.bindProfile($vm.dflashInMemoryCacheGib),
-                                      placeholder: "8", mono: true, suffix: "GiB", width: .controlCompact)
-                        }
-                        RowSwitch(isOn: vm.bindProfile($vm.dflashInMemoryCache))
-                    }
-                }
-                if vm.dflashInMemoryCache {
-                    Row(label: String(localized: "settings.experimental.dflash.mem_cache_entries.label",
-                                      defaultValue: "Cache Entries",
-                                      comment: "Row label for the DFlash L1 in-memory cache max entries field"),
-                        sublabel: String(localized: "settings.experimental.dflash.mem_cache_entries.sub",
-                                         defaultValue: "Maximum prefix snapshots kept in RAM. Each entry stores KV + draft GDN state.",
-                                         comment: "Sublabel for the DFlash L1 cache max entries field")) {
-                        TextInput(text: vm.bindProfile($vm.dflashInMemoryCacheMaxEntries),
-                                  placeholder: "4", mono: true, width: .controlCompact)
-                    }
-                }
-                Row(label: String(localized: "settings.experimental.dflash.ssd_cache.label",
-                                  defaultValue: "DFlash SSD cache",
-                                  comment: "Row label for the DFlash L2 SSD cache toggle"),
-                    sublabel: dflashSsdSublabel) {
-                    RowSwitch(isOn: vm.bindProfile($vm.dflashSsdCache))
-                        .disabled(!(vm.model?.dflashSsdCacheAvailable ?? false) || !vm.dflashInMemoryCache)
-                }
-                if vm.dflashSsdCache && (vm.model?.dflashSsdCacheAvailable ?? false) {
-                    Row(label: String(localized: "settings.experimental.dflash.ssd_cache_size.label",
-                                      defaultValue: "SSD Cache Size",
-                                      comment: "Row label for the DFlash L2 SSD cache disk budget field"),
-                        sublabel: String(localized: "settings.experimental.dflash.ssd_cache_size.sub",
-                                         defaultValue: "Disk budget for L2 spill; oldest entries are evicted when exceeded.",
-                                         comment: "Sublabel for the DFlash SSD cache size field")) {
-                        TextInput(text: vm.bindProfile($vm.dflashSsdCacheGib),
-                                  placeholder: "20", mono: true, suffix: "GiB", width: .controlCompact)
-                    }
                 }
             }
 
@@ -1899,22 +1826,6 @@ private struct AccelerationSection: View {
         return String(localized: "settings.experimental.dflash.sub",
                       defaultValue: "Block-diffusion speculative decoding.",
                       comment: "Default sublabel for the DFlash toggle (used when the model is compatible)")
-    }
-
-    private var dflashSsdSublabel: String {
-        if !(vm.model?.dflashSsdCacheAvailable ?? false) {
-            return String(localized: "settings.experimental.dflash.ssd_cache.sub.unavailable",
-                          defaultValue: "Enable the global paged SSD cache directory first.",
-                          comment: "Sublabel for the DFlash SSD cache row when the global SSD cache directory isn't configured")
-        }
-        if !vm.dflashInMemoryCache {
-            return String(localized: "settings.experimental.dflash.ssd_cache.sub.needs_l1",
-                          defaultValue: "Requires the in-memory cache to be enabled.",
-                          comment: "Sublabel for the DFlash SSD cache row when the L1 in-memory cache is off")
-        }
-        return String(localized: "settings.experimental.dflash.ssd_cache.sub",
-                      defaultValue: "L2 spill of evicted L1 entries to disk.",
-                      comment: "Default sublabel for the DFlash SSD cache toggle")
     }
 
     private var vlmMtpToggleDisabled: Bool {
