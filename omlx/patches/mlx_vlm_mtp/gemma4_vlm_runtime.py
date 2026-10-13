@@ -175,6 +175,7 @@ def _patch_vlm_language_model(g4_lang: Any) -> None:
 
     original_init = cls.__init__
     original_call = cls.__call__
+    original_rollback = cls.rollback_speculative_cache
 
     def __init__(self, config):
         from . import is_mtp_attach_enabled
@@ -292,6 +293,21 @@ def _patch_vlm_language_model(g4_lang: Any) -> None:
             gdn_states=[],
         )
 
+    def rollback_speculative_cache(self, caches, gdn_states, accepted, block_size):
+        """Trim one row's rejected verify rows without a device read.
+
+        The stock hook reads the accepted count back from an ``mx.array``,
+        which waits for the draft already queued behind the verify.
+        """
+        if not isinstance(accepted, int):
+            return original_rollback(self, caches, gdn_states, accepted, block_size)
+        trim = int(block_size) - accepted - 1
+        if trim > 0:
+            for cache in caches:
+                if cache is not None and hasattr(cache, "trim"):
+                    cache.trim(trim)
+        return accepted
+
     def _mtp_query_position(self) -> int:
         """Current committed length = the drafter's constant query position.
 
@@ -383,6 +399,7 @@ def _patch_vlm_language_model(g4_lang: Any) -> None:
 
     cls.__init__ = __init__
     cls.__call__ = __call__
+    cls.rollback_speculative_cache = rollback_speculative_cache
     cls.mtp_forward = mtp_forward
     cls.make_mtp_cache = make_mtp_cache
     cls._omlx_mtp_runtime_patched = True

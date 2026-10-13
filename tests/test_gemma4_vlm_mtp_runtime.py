@@ -272,3 +272,15 @@ def test_block_drafter_captures_requested_layers_then_the_last():
     [(uids, caps)] = observed
     assert uids == (5,)
     assert [tuple(c.shape[:2]) for c in caps] == [(1, 1), (1, 1)]
+
+
+def test_single_row_rollback_trims_rejected_rows():
+    from mlx_vlm.models.cache import KVCache
+
+    lm = _language_model(_text_config())
+    caches = [KVCache(), KVCache()]
+    for cache in caches:
+        cache.update_and_fetch(mx.zeros((1, 1, 10, 8)), mx.zeros((1, 1, 10, 8)))
+    # Two of five drafts accepted: three positions of the six-row verify go.
+    assert lm.rollback_speculative_cache(caches, [], 2, 6) == 2
+    assert [cache.offset for cache in caches] == [7, 7]
