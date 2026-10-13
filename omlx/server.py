@@ -1701,6 +1701,13 @@ async def get_engine_for_model(
     return engine
 
 
+def _accepts_images(engine) -> bool:
+    """Whether image parts stay in the messages handed to ``engine``."""
+    return isinstance(engine, VLMBatchedEngine) or getattr(
+        engine, "accepts_images", False
+    )
+
+
 def _serving_model_id(
     lease: _LLMEngineLease,
     requested_model: str | None,
@@ -4410,7 +4417,7 @@ def _extract_chat_messages(
             else None
         ),
     )
-    is_vlm = isinstance(engine, VLMBatchedEngine)
+    is_vlm = _accepts_images(engine)
     extractor = getattr(engine, "message_extractor", None)
     if extractor is not None:
         extractor_kwargs = {}
@@ -7144,7 +7151,7 @@ async def create_anthropic_message(
 
         # Convert Anthropic format to internal format
         # Harmony models need special handling to preserve tool format
-        is_vlm = isinstance(engine, VLMBatchedEngine)
+        is_vlm = _accepts_images(engine)
         native_reasoning = uses_native_reasoning_content(
             resolved_model,
             config_model_type=(
@@ -7832,7 +7839,7 @@ async def create_response(
         # Images in function_call_output lists survive only for engines that
         # can extract them; text engines get a placeholder instead so base64
         # payloads never reach the prompt (#2989).
-        preserve_tool_images = isinstance(engine, VLMBatchedEngine)
+        preserve_tool_images = _accepts_images(engine)
 
         current_input_messages = convert_responses_input_to_messages(
             request.input,

@@ -752,6 +752,11 @@ class SplashEngine(BaseEngine):
         options: SplashOptions,
     ) -> None:
         self._path = Path(model_name)
+        config = _read_config(self._path) or {}
+        # The server keeps image parts in the messages of an engine that sets this.
+        self.accepts_images = bool(config.get("vision_config")) and not config.get(
+            "language_model_only"
+        )
         self._target = target
         self._repo_id = splash_repo_id(model_id)
         self._hub_dir = hub_dir
@@ -850,8 +855,6 @@ class SplashEngine(BaseEngine):
             "--port",
             str(port),
             "--no-webui",
-            # Requests arrive as text: skip loading the vision tower.
-            "--language-only",
             # oMLX unloads idle models itself; Splash must not free weights
             # that oMLX still counts as loaded.
             "--idle-release",
@@ -859,6 +862,9 @@ class SplashEngine(BaseEngine):
             "--kv-format",
             options.kv_format,
         ]
+        if not self.accepts_images:
+            # Requests arrive as text: skip loading the vision tower.
+            command.append("--language-only")
         # Without a limit Splash fits its context to the memory budget; a
         # limit the budget cannot hold makes it refuse to start.
         if options.max_context:

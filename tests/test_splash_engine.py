@@ -420,6 +420,28 @@ class TestRequestTranslation:
         assert value("--max-cache-disk") == str(5 * GIB)
         assert value("--cache-dir") == str(tmp_path / "ssd")
 
+    def test_checkpoint_with_a_vision_tower_keeps_images(self, tmp_path):
+        model = tmp_path / "models" / "Qwen3.8-27B-4bit"
+        model.mkdir(parents=True)
+        (model / "config.json").write_text(json.dumps({"vision_config": {"depth": 2}}))
+
+        engine = _engine(tmp_path)
+
+        assert engine.accepts_images
+        assert "--language-only" not in engine._serve_command(9000)
+
+    def test_language_only_checkpoint_refuses_images(self, tmp_path):
+        model = tmp_path / "models" / "Qwen3.8-27B-4bit"
+        model.mkdir(parents=True)
+        (model / "config.json").write_text(
+            json.dumps({"vision_config": {"depth": 2}, "language_model_only": True})
+        )
+
+        engine = _engine(tmp_path)
+
+        assert not engine.accepts_images
+        assert "--language-only" in engine._serve_command(9000)
+
     def test_serve_command_leaves_unset_limits_to_splash(self, tmp_path):
         command = _engine(tmp_path)._serve_command(9000)
 
