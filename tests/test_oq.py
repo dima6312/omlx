@@ -7984,3 +7984,43 @@ class TestStreamedCalibration:
         for key, entry in resident.items():
             np.testing.assert_array_equal(streamed[key].counts, entry.counts)
             np.testing.assert_array_equal(streamed[key].in_sum2, entry.in_sum2)
+
+
+def test_find_model_layers_spark2_5_layer_walk_matches_forward():
+    """Spark-X2.5 names its embedding ``model.embedding``; the walk must still find it."""
+    from mlx_lm.models import spark2_5
+
+    from omlx.oq import _forward_layer_result, _prepare_layer_inputs
+
+    args = spark2_5.ModelArgs(
+        model_type="spark2_5",
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=4,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=8,
+        vocab_size=64,
+        sliding_window=4,
+        layer_types=["sliding_attention", "sliding_attention", "sliding_attention", "full_attention"],
+        rope_parameters={
+            "sliding_attention": {"rope_theta": 10000.0},
+            "full_attention": {"rope_theta": 10000.0},
+        },
+    )
+    mx.random.seed(0)
+    model = spark2_5.Model(args)
+    ids = mx.array([[3, 7, 1, 9, 4, 2, 8, 5]])
+    embed_fn, layers = _find_model_layers(model)
+    assert embed_fn is model.model.embedding
+
+    hidden, masks, state = _prepare_layer_inputs(model, layers, ids, embed_fn(ids))
+    for layer_idx, layer in enumerate(layers):
+        hidden, _ = _forward_layer_result(layer, hidden, masks[layer_idx], state, layer_idx=layer_idx)
+    assert mx.allclose(model.model.norm(hidden), model.model(ids), atol=1e-5)
+
+
+def test_spark2_5_head_gates_stay_unquantized():
+    config = {"model_type": "spark2_5", "num_hidden_layers": 36, "hidden_size": 2560}
+    assert universal_quant_predicate("model.layers.3.self_attn.g_proj", None, config, 4) is False
+    assert universal_quant_predicate("model.layers.3.self_attn.q_proj", None, config, 4) is not False

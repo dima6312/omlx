@@ -631,6 +631,11 @@ def universal_quant_predicate(
     if path in non_quantizable:
         return False
 
+    # Spark-X2.5 sigmoid head gates stay at source precision, as mlx-lm's own
+    # spark2_5 quant_predicate does.
+    if config.get("model_type") == "spark2_5" and path.endswith("self_attn.g_proj"):
+        return False
+
     glm_indexer_override = _glm_indexer_q8_override(path, config)
     if glm_indexer_override is not None:
         return glm_indexer_override
@@ -7724,6 +7729,10 @@ def _find_model_layers(model):
     elif hasattr(model, "model") and hasattr(model.model, "word_embeddings"):
         embed_fn = model.model.word_embeddings
         layers = model.model.layers
+    elif hasattr(model, "model") and hasattr(model.model, "embedding"):
+        # Spark-X2.5 (spark2_5)
+        embed_fn = model.model.embedding
+        layers = model.model.layers
     elif hasattr(model, "language_model") and hasattr(model.language_model, "model"):
         lm = model.language_model.model
         if hasattr(lm, "embed_tokens"):
@@ -8153,6 +8162,14 @@ def _forward_layer(block, inputs, mask, position_ids):
 
 def _layer_masks_for_model(model, layers, inputs):
     """Build the per-layer mask schedule used by the original model."""
+    window = getattr(getattr(getattr(model, "model", model), "args", None), "sliding_window", None)
+    if window and any(getattr(layer, "is_sliding", False) for layer in layers):
+        # Spark-X2.5: sliding layers see only the last ``window`` tokens.
+        from mlx_lm.models.base import create_attention_mask
+
+        full = create_attention_mask(inputs, None, return_array=True)
+        sliding = create_attention_mask(inputs, None, window_size=window, return_array=True)
+        return [sliding if getattr(layer, "is_sliding", False) else full for layer in layers]
     if hasattr(model, "make_cache") and any(
         hasattr(layer, "is_linear") or hasattr(layer, "is_global")
         for layer in layers
