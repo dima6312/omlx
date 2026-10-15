@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 import mlx.core as mx
 import mlx.nn as nn
 import pytest
+from mlx.utils import tree_map
 from mlx_lm.models.rope_utils import initialize_rope
 
 from omlx import memory_monitor
@@ -1304,6 +1305,25 @@ def test_qwen4_ple_ordinary_forward_disarms_stale_snapshot():
     assert getattr(ple_cache, "_qwen4_exp_ple_speculative_state", None) is None
 
 
+def test_qwen4_fp16_model_stays_fp16_with_bf16_ple_table():
+    """A PLE table that decodes to bf16 must not promote an fp16 model to fp32."""
+    config = _tiny_config()
+    from mlx_vlm.models.qwen4_exp.language import LanguageModel
+
+    model = LanguageModel(config.text_config, config)
+    model.update(
+        tree_map(
+            lambda x: x.astype(mx.float16) if mx.issubdtype(x.dtype, mx.floating) else x,
+            model.parameters(),
+        )
+    )
+    table = model.model.layers[0].ple.ple_embedding.ngram_embedding
+    table.weight_scale = mx.ones((1,), dtype=mx.bfloat16)
+
+    output = model(mx.array([[2, 3, 4]], dtype=mx.int32), cache=model.make_cache())
+    assert output.logits.dtype == mx.float16
+
+
 def test_qwen4_ple_rollback_validates_accepted_count_before_qsa_mutation():
     config = _tiny_config()
     from mlx_vlm.models.qwen4_exp.language import LanguageModel
@@ -1894,15 +1914,15 @@ def test_qwen4_lightning_mtp_isolated_from_dense_qwen35_runtime_patch():
     assert later_owner.mtp is not None
 
 
-def _disk_ple(tmp_path, *, shards, rows, dims, bits=None):
-    """Write a sharded PLE table (affine-packed when ``bits`` is set, else dense bf16) and open it from disk."""
+def _disk_ple(tmp_path, *, shards, rows, dims, bits=None, dtype=mx.bfloat16):
+    """Write a sharded PLE table (affine-packed when ``bits`` is set, else dense) and open it from disk."""
     compat.apply_mlx_vlm_qwen4_exp_compat_patch()
     from mlx_vlm.models.qwen4_exp.language import DiskBackedShardedEmbedding
 
     prefix = "model.language_model.layers.1.ple.ple_embedding.ngram_embedding"
     tensors, dense_rows = {}, []
     for shard_index in range(shards):
-        dense = (mx.random.normal((rows, dims)) * (shard_index + 1)).astype(mx.bfloat16)
+        dense = (mx.random.normal((rows, dims)) * (shard_index + 1)).astype(dtype)
         base = f"{prefix}.shard_{shard_index}"
         if bits is None:
             tensors[f"{base}.weight"] = dense
@@ -1910,26 +1930,30 @@ def _disk_ple(tmp_path, *, shards, rows, dims, bits=None):
         else:
             weight, scales, biases = mx.quantize(dense, group_size=32, bits=bits, mode="affine")
             tensors[f"{base}.weight"], tensors[f"{base}.scales"], tensors[f"{base}.biases"] = weight, scales, biases
-            dense_rows.append(mx.dequantize(weight, scales, biases, group_size=32, bits=bits, mode="affine").astype(mx.bfloat16))
+            dense_rows.append(mx.dequantize(weight, scales, biases, group_size=32, bits=bits, mode="affine").astype(dtype))
     mx.eval(*tensors.values(), *dense_rows)
     filename = "model-00001-of-00001.safetensors"
     mx.save_safetensors(str(tmp_path / filename), tensors, metadata={"format": "mlx"})
     (tmp_path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {key: filename for key in tensors}}), encoding="utf-8")
     table = mx.concatenate(dense_rows)
-    return DiskBackedShardedEmbedding(tmp_path, prefix, num_embeddings=shards * rows, dims=dims, num_shards=shards), table
+    embedding = DiskBackedShardedEmbedding(tmp_path, prefix, num_embeddings=shards * rows, dims=dims, num_shards=shards)
+    # Converted checkpoints store the shared scale in the checkpoint dtype.
+    embedding.weight_scale = mx.ones((1,), dtype=dtype)
+    return embedding, table
 
 
+@pytest.mark.parametrize("dtype", [mx.bfloat16, mx.float16])
 @pytest.mark.parametrize("bits", [None, 4, 5])
-def test_disk_backed_ple_gathers_a_chunk_with_one_upload_per_tensor(tmp_path, bits):
+def test_disk_backed_ple_gathers_a_chunk_with_one_upload_per_tensor(tmp_path, bits, dtype):
     """A chunk's rows are assembled on the host and uploaded once per tensor, not once per shard."""
-    embedding, table = _disk_ple(tmp_path, shards=3, rows=8, dims=64, bits=bits)
+    embedding, table = _disk_ple(tmp_path, shards=3, rows=8, dims=64, bits=bits, dtype=dtype)
     mx.random.seed(11)
     indices = mx.random.randint(0, 24, (2, 40)).astype(mx.int32)
     mx.eval(indices)
     values = embedding(indices)
     mx.eval(values)
     expected = mx.take(table, indices.reshape(-1), axis=0).reshape(2, 40, 64)
-    assert values.dtype == mx.bfloat16
+    assert values.dtype == dtype
     assert mx.array_equal(values, expected).item()
     assert embedding.rows_read == 80
     assert embedding.last_touched_shards == (0, 1, 2)

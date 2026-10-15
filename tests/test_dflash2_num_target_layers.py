@@ -9,7 +9,7 @@ import pytest
 
 dflash2_config = pytest.importorskip("mlx_vlm.speculative.drafters.dflash2.config")
 
-from omlx.speculative import dflash_drafter  # noqa: E402
+from omlx.speculative import dflash as dflash_drafter  # noqa: E402
 
 # config.json of mlx-community/Qwen3.6-35B-A3B-DFlash2-4bit (no num_target_layers)
 _CONVERTED = {

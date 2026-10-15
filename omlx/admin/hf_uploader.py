@@ -20,7 +20,7 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
-from ..model_discovery import CLEF_HEAD_WEIGHTS
+from ..model_discovery import CLEF_HEAD_WEIGHTS, D3_READOUT_WEIGHTS
 from ..oq import (
     _is_audio_tensor,
     _is_mtp_tensor,
@@ -100,6 +100,7 @@ _COMPONENT_ORDER = (
     "Audio",
     "MTP head",
     "Joint schema head",
+    "Decision readout",
 )
 _REDOWNLOAD_NOTICE = (
     "> [!NOTE]\n"
@@ -153,6 +154,8 @@ def _storage_format(
 def _card_component(key: str, shard: str, config: dict) -> str:
     if shard == CLEF_HEAD_WEIGHTS:
         return "Joint schema head"
+    if shard == D3_READOUT_WEIGHTS:
+        return "Decision readout"
     if _is_qwen4_exp_ngram_embedding_tensor(key, config):
         return "N-gram embedding"
     if config.get("model_type") == "deepseek_v41" and ".engram.embed" in key:

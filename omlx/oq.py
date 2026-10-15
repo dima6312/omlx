@@ -38,11 +38,13 @@ except ImportError:
     HAS_MLX = False
 
 from omlx.model_discovery import (
-    CLEF_HEAD_CONFIG,
-    CLEF_HEAD_WEIGHTS,
+    D3_DECISION_CONFIG,
+    DECISION_SIDECAR_FILES,
+    DECISION_SIDECAR_WEIGHTS,
     MLX_LM_TEXT_ONLY_MODEL_TYPES,
     VLM_NATIVE_TEXT_MODEL_TYPES,
     _has_vision_subconfig,
+    decision_kind,
 )
 
 logger = logging.getLogger(__name__)
@@ -3667,7 +3669,9 @@ def _metal_available_memory_bytes() -> int:
 def _source_weight_files(model_path: str | Path) -> list[Path]:
     source = Path(model_path)
     files = sorted(
-        f for f in source.glob("*.safetensors") if f.name != CLEF_HEAD_WEIGHTS
+        f
+        for f in source.glob("*.safetensors")
+        if f.name not in DECISION_SIDECAR_WEIGHTS
     )
     sidecar = source / "mtp" / "model_mtp.safetensors"
     if sidecar.is_file():
@@ -4193,6 +4197,7 @@ def _build_model_sanitizer(
             # in the quantization pipeline.
             has_audio = config.get("audio_config") is not None
             _AUDIO_SENTINEL = object() if has_audio else None
+            has_vision = config.get("vision_config") is not None
 
             def _vlm_sanitize(weights):
                 class _Proxy:
@@ -4227,6 +4232,9 @@ def _build_model_sanitizer(
 
                 proxy = _Proxy()
                 proxy.config = model_config
+                if has_vision:
+                    # EmbeddingGemma 2 drops vision weights when vision_tower is None.
+                    proxy.vision_tower = proxy.embed_vision = object()
                 # Nested-VLM sanitizes (e.g. MiniMax-M3 minimax_m3_vl) read
                 # self.language_model.args.{num_hidden_layers,num_local_experts}
                 # for MoE expert stacking; expose text_config so proxy-based
@@ -6272,6 +6280,15 @@ def quantize_oq_streaming(
         )
         text_only = True
     _validate_oq_dtype_for_model(config, dtype)
+    if decision_kind(source, config) == "d3":
+        if text_only:
+            raise ValueError(
+                "Decision 3.0 reads images with its vision tower; text-only "
+                "output is not supported"
+            )
+        d3_config = json.loads((source / D3_DECISION_CONFIG).read_text())
+        if d3_config.get("attention_mode") == "noncausal_full_attention":
+            config["_oq_noncausal_attention"] = True
     static_sensitivity_map = _normalize_sensitivity_map_override(
         config, sensitivity_map_override
     )
@@ -7007,9 +7024,11 @@ def quantize_oq_streaming(
     cb("saving", 92.0, "Writing model metadata")
 
     # Without an index, mlx-vlm loads every *.safetensors file, which would
-    # include the Clef decision head copied next to the shards.
-    has_clef_head = (source / CLEF_HEAD_WEIGHTS).is_file()
-    if total_shards > 1 or has_clef_head:
+    # include a decision head copied next to the shards.
+    has_decision_head = any(
+        (source / name).is_file() for name in DECISION_SIDECAR_WEIGHTS
+    )
+    if total_shards > 1 or has_decision_head:
         total_size = sum(f.stat().st_size for f in output.glob("*.safetensors"))
         index = {
             "metadata": {"total_size": total_size},
@@ -7024,6 +7043,7 @@ def quantize_oq_streaming(
         "_oq_boost_map",
         "_oq_use_budget_plan",
         "_oq_non_quantizable",
+        "_oq_noncausal_attention",
     ):
         output_config.pop(temp_key, None)
     if text_only:
@@ -7079,10 +7099,9 @@ def quantize_oq_streaming(
             json.dump(imatrix_report, f, indent=2, ensure_ascii=False)
 
     _copy_model_sidecars(source, output, text_only=text_only)
-    if has_clef_head:
-        for name in (CLEF_HEAD_WEIGHTS, CLEF_HEAD_CONFIG):
-            if (source / name).is_file():
-                shutil.copy2(source / name, output / name)
+    for name in DECISION_SIDECAR_FILES:
+        if (source / name).is_file():
+            shutil.copy2(source / name, output / name)
 
     if mimo_multimodal:
         from .patches.mimo_v2.omnimodal import export_sidecars
@@ -7419,6 +7438,12 @@ def _find_model_layers(model):
             ):
                 embed_fn = lm.embed
             layers = lm.layers
+    elif hasattr(model, "language_model") and hasattr(
+        model.language_model, "embed_tokens"
+    ):
+        # EmbeddingGemma 2 keeps its text encoder directly on language_model.
+        embed_fn = model.language_model.embed_tokens
+        layers = model.language_model.layers
     elif hasattr(model, "embed_tokens"):
         embed_fn = model.embed_tokens
         layers = model.layers
@@ -7432,6 +7457,7 @@ def _find_model_layers(model):
 _GEMMA4_LAYER_STATE_KIND = "gemma4_shared_kv"
 _QWEN4_EXP_LAYER_STATE_KIND = "qwen4_exp"
 _GLM5_NEXT_LAYER_STATE_KIND = "glm5_next"
+_EMBEDDING_GEMMA2_LAYER_STATE_KIND = "embedding_gemma2"
 
 
 def _find_layer_model(model, layers):
@@ -7629,6 +7655,41 @@ def _prepare_qwen4_exp_layer_inputs(model, layers, calib_data, inputs):
     return inputs, layer_masks, state
 
 
+def _prepare_embedding_gemma2_layer_inputs(model, layers, calib_data, inputs):
+    """Build EmbeddingGemma 2's encoder layer-walk inputs.
+
+    The text encoder is bidirectional: full layers see every token and sliding
+    layers see tokens within ``sliding_window``. Each layer also takes its slice
+    of the per-layer inputs projected from the scaled token embeddings.
+    """
+    layer_model = _find_layer_model(model, layers)
+    config = getattr(layer_model, "config", None)
+    if getattr(config, "model_type", None) != "embedding_gemma2_text":
+        return None
+    inputs = inputs * mx.array(config.hidden_size**0.5, dtype=inputs.dtype)
+    ple = getattr(layer_model, "ple", None)
+    per_layer_inputs = ple(inputs) if ple is not None else None
+    batch, length = int(calib_data.shape[0]), int(calib_data.shape[1])
+    positions = mx.arange(length)
+    full = mx.ones((batch, 1, 1, length), dtype=mx.bool_)
+    sliding = full & (
+        mx.abs(positions[:, None] - positions[None, :]) <= config.sliding_window
+    )
+    layer_masks = [
+        sliding if kind == "sliding_attention" else full
+        for kind in config.layer_types
+    ]
+    state = {
+        "kind": _EMBEDDING_GEMMA2_LAYER_STATE_KIND,
+        "position_ids": positions[None],
+        "per_layer_inputs": [
+            None if per_layer_inputs is None else per_layer_inputs[:, :, i]
+            for i in range(len(layers))
+        ],
+    }
+    return inputs, layer_masks, state
+
+
 def _forward_gemma4_layer_result(block, inputs, mask, state, layer_idx: int):
     if not 0 <= int(layer_idx) < len(state["previous_kvs"]):
         raise RuntimeError(f"Invalid Gemma 4 calibration layer index: {layer_idx}")
@@ -7698,6 +7759,24 @@ def _forward_layer_result(block, inputs, mask, position_ids, layer_idx=None):
             ) from e
         if isinstance(result, tuple):
             return result[0], result[1] if len(result) > 1 else None
+        return result, None
+    if (
+        isinstance(position_ids, dict)
+        and position_ids.get("kind") == _EMBEDDING_GEMMA2_LAYER_STATE_KIND
+    ):
+        if layer_idx is None:
+            raise RuntimeError("EmbeddingGemma 2 calibration requires a layer index")
+        try:
+            result = block(
+                inputs,
+                mask,
+                position_ids["position_ids"],
+                position_ids["per_layer_inputs"][int(layer_idx)],
+            )
+        except (TypeError, ValueError, RuntimeError, AttributeError) as e:
+            raise RuntimeError(
+                f"EmbeddingGemma 2 calibration forward failed at layer {layer_idx}: {e}"
+            ) from e
         return result, None
     if (
         isinstance(position_ids, dict)
@@ -7867,15 +7946,25 @@ def _restore_saved_weights(block, saved):
             modules_by_path[path].weight = weight
 
 
-def _prepare_layer_inputs(model, layers, calib_data, inputs):
+def _noncausal_attention(config: dict) -> bool:
+    return bool(config.get("_oq_noncausal_attention"))
+
+
+def _prepare_layer_inputs(model, layers, calib_data, inputs, *, noncausal=False):
     """Model-specific (inputs, per-layer masks, 4th forward arg) for
     block-level sensitivity forwards.
+
+    ``noncausal`` drops every mask, for models that read whole prompts with
+    non-causal attention (Decision 3.0).
 
     DeepSeek V4 blocks run on a 4D hidden (B, S, hc_mult, hidden), take a
     window-limited array mask, and need the real token ids as their 4th
     argument (hash expert routing indexes tid2eid with them). Everything
     else keeps the generic 3D inputs + causal masks + position ids.
     """
+    if noncausal:
+        position_ids = mx.arange(calib_data.shape[1])[None, :]
+        return inputs, [None] * len(layers), position_ids
     model_type = str(
         getattr(model, "model_type", "")
         or getattr(getattr(model, "args", None), "model_type", "")
@@ -7893,6 +7982,11 @@ def _prepare_layer_inputs(model, layers, calib_data, inputs):
     )
     if qwen4_exp_inputs is not None:
         return qwen4_exp_inputs
+    embedding_gemma2_inputs = _prepare_embedding_gemma2_layer_inputs(
+        model, layers, calib_data, inputs
+    )
+    if embedding_gemma2_inputs is not None:
+        return embedding_gemma2_inputs
     if model_type == "glm5_next":
         language_model = getattr(model, "language_model", None)
         args = getattr(language_model, "args", None)
@@ -8483,7 +8577,7 @@ def _collect_imatrix_from_model(
 
                 inputs = embed_fn(batch)
                 inputs, layer_masks, position_ids = _prepare_layer_inputs(
-                    model, layers, batch, inputs
+                    model, layers, batch, inputs, noncausal=_noncausal_attention(config)
                 )
                 if isinstance(position_ids, dict):
                     layer_state_kind = position_ids.get("kind")
@@ -9109,7 +9203,11 @@ def _streamed_sensitivity_state(
             "scores": {},
         }
     inputs, masks, position_ids = _prepare_layer_inputs(
-        _StreamingNoModel(), [None], calib_data, inputs
+        _StreamingNoModel(),
+        [None],
+        calib_data,
+        inputs,
+        noncausal=_noncausal_attention(config),
     )
     mx.eval(inputs)
     return {
@@ -9422,7 +9520,11 @@ def _collect_imatrix_streaming(
         # One causal mask and one position-id row serve every layer and every
         # micro-batch: both depend only on seq_length and the activation dtype.
         _, layer_masks, position_ids = _prepare_layer_inputs(
-            _StreamingNoModel(), [None], calib_data[:1], embedded[:1]
+            _StreamingNoModel(),
+            [None],
+            calib_data[:1],
+            embedded[:1],
+            noncausal=_noncausal_attention(config),
         )
         mask = layer_masks[0]
 
@@ -10034,7 +10136,7 @@ def _measure_sensitivity_from_model(
 
     inputs = embed_fn(calib_data)
     inputs, layer_masks, position_ids = _prepare_layer_inputs(
-        model, layers, calib_data, inputs
+        model, layers, calib_data, inputs, noncausal=_noncausal_attention(config)
     )
     sensitivity = {}
 
@@ -10715,7 +10817,7 @@ def _measure_sensitivity_from_quantized_model(
 
     inputs = embed_fn(calib_data)
     inputs, layer_masks, position_ids = _prepare_layer_inputs(
-        model, layers, calib_data, inputs
+        model, layers, calib_data, inputs, noncausal=_noncausal_attention(config)
     )
     sensitivity = {}
 

@@ -143,6 +143,11 @@ class TestGenerateModelCard:
                 "mtp.layers.0.eh_proj.weight": weight,
             },
         )
+        # A d3 code readout is stored beside the shards in FP32.
+        mx.save_safetensors(
+            str(tmp_path / "readout.safetensors"),
+            {"weight": mx.ones((4, 64), dtype=mx.float32)},
+        )
         config = {"model_type": "qwen2", "quantization": {"bits": 4, "group_size": 64}}
 
         card = _generate_model_card(
@@ -162,6 +167,7 @@ class TestGenerateModelCard:
         assert rows["| BF16"].endswith("| 16.00 |")
         assert "| MTP head |" in card
         assert "| Language model |" in card
+        assert "| Decision readout | 0.000B | 0.000 GB / 0.000 GiB |" in card
 
     def test_lookup_tables_are_reported_apart_from_the_average(self, tmp_path):
         ple = "language_model.model.layers.1.ple.ple_embedding.ngram_embedding.shards.0"
