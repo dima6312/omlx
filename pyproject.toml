@@ -43,9 +43,9 @@ dependencies = [
     # binaries are ABI-coupled to this exact mlx version — bumping the pin
     # requires rebuilding them (OMLX_WITH_CUSTOM_KERNEL=1 setup.py build_ext).
     "mlx==0.32.4",
-    # mlx-lm main after 0.32.0. setuptools-scm derives the version from the
+    # mlx-lm main 72be8c9 (after 0.32.0). setuptools-scm derives the version from the
     # v0.31.3 tag, so it reports 0.31.4.devN; the 0.32.0 features are present.
-    "mlx-lm @ git+https://github.com/ml-explore/mlx-lm@94cdcae13b266c337bcaca09b97b9c5a9c0e2cde",
+    "mlx-lm @ git+https://github.com/ml-explore/mlx-lm@72be8c955d9a0d3099bd01865af288e0e947c3fa",
     # regex for mlx-lm's Gemma 4 tool parser (uses recursive patterns)
     "regex",
     # mlx-embeddings from latest commit (32981fa)
@@ -110,10 +110,10 @@ dependencies = [
     "openai-harmony",
     # Cohere Command/Cohere2 output parser for reasoning and tool calls
     "cohere_melody>=0.9.0",
-    # mlx-vlm from commit 63fc979 (main after v0.7.8, adds Nemotron 3.5 Bolt and
+    # mlx-vlm from commit f1a9b7b (main after v0.7.8, adds Nemotron 3.5 Bolt and
     # Super VL). oMLX model implementations remain registered
     # by their pre-load patches.
-    "mlx-vlm @ git+https://github.com/Blaizzy/mlx-vlm@63fc97955c4e3dbe4eaad7c838d4d81701b783af",
+    "mlx-vlm @ git+https://github.com/Blaizzy/mlx-vlm@f1a9b7bac6f2b95f588ffc9343495a3c61c6e328",
     # mlx-vlm requires mlx-audio>=0.5.2 in the shared runtime.
     "mlx-audio @ git+https://github.com/Blaizzy/mlx-audio@94c7716212b2228f178d2f9c7619a591fd1b0b78",
     "Pillow>=9.0.0",
@@ -259,7 +259,7 @@ include = ["omlx*"]
 # so dependency resolution retains the selected runtime versions.
 override-dependencies = [
     "mlx==0.32.4",
-    "mlx-lm @ git+https://github.com/ml-explore/mlx-lm@94cdcae13b266c337bcaca09b97b9c5a9c0e2cde",
+    "mlx-lm @ git+https://github.com/ml-explore/mlx-lm@72be8c955d9a0d3099bd01865af288e0e947c3fa",
 ]
 
 [tool.black]
