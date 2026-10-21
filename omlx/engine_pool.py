@@ -36,6 +36,7 @@ from . import gguf
 from .engine import BaseEngine, BatchedEngine
 from .engine.decision import DecisionEngine
 from .engine.embedding import EmbeddingEngine
+from .engine.rec import REC_ENGINE, RecEngine, find_rec_binary, rec_memory_estimate
 from .engine.reranker import RerankerEngine
 from .engine.splash import (
     EXTERNAL_ENGINES,
@@ -596,7 +597,13 @@ class EnginePool:
         base = self._entry_resident_size(entry) if base_size is None else base_size
         if self._distributed_deployment_for_entry(entry) is not None:
             return base
-        if self.external_engine_id(entry.model_id, runtime_settings):
+        engine_id = self.external_engine_id(entry.model_id, runtime_settings)
+        if engine_id == REC_ENGINE:
+            return rec_memory_estimate(
+                entry.model_path,
+                self._splash_sizing_context(entry, runtime_settings),
+            )
+        if engine_id:
             # Splash plans its own budget; none of the MLX reservations apply.
             target, _ = self.splash_target(entry.model_id, runtime_settings)
             if target is not None:
@@ -2121,7 +2128,7 @@ class EnginePool:
             get_settings = getattr(self._settings_manager, "get_settings", None)
             if callable(get_settings):
                 settings = get_settings(model_id)
-        if self.external_engine_id(model_id, settings):
+        if self.external_engine_id(model_id, settings) not in (None, REC_ENGINE):
             await asyncio.to_thread(
                 find_splash_binary, get_global_settings().integrations.splash_path
             )
@@ -2130,6 +2137,8 @@ class EnginePool:
         self, model_id: str, model_settings: object | None
     ) -> str:
         """Why no external engine can serve ``model_id``; empty when one can."""
+        if self.external_engine_id(model_id, model_settings) == REC_ENGINE:
+            return "" if find_rec_binary() else "Rec is not installed (no rec on PATH)"
         await self._check_splash_launcher(model_id, model_settings)
         _, reason = self.splash_target(model_id, model_settings)
         return reason
@@ -2164,6 +2173,8 @@ class EnginePool:
         engine_id = self.external_engine_id(entry.model_id, model_settings)
         if not engine_id:
             return None
+        if engine_id == REC_ENGINE:
+            return self._rec_engine_for(entry, model_settings)
         if engine_id not in EXTERNAL_ENGINES:
             raise ModelLoadingError(
                 entry.model_id, f"Unknown external engine '{engine_id}'"
@@ -2235,6 +2246,22 @@ class EnginePool:
                 cache_disk_bytes=cache_disk_bytes,
                 cache_dir=cache_dir,
             ),
+        )
+
+    def _rec_engine_for(
+        self, entry: EngineEntry, model_settings: object | None
+    ) -> RecEngine:
+        binary = find_rec_binary()
+        if binary is None:
+            raise ModelLoadingError(
+                entry.model_id, "Rec is not installed (no rec on PATH)"
+            )
+        settings = get_global_settings()
+        return RecEngine(
+            model_name=entry.model_path,
+            binary=binary,
+            log_dir=settings.logging.get_log_dir(settings.base_path) / "rec",
+            context=getattr(model_settings, "max_context_window", None),
         )
 
     def external_process_memory_bytes(self) -> int:
@@ -4490,7 +4517,7 @@ class EnginePool:
             external_engine = None
             if isinstance(e.engine, SplashEngine):
                 # Report the live footprint of the Splash process group.
-                external_engine = "splash"
+                external_engine = e.engine.engine_id
                 actual_size = e.engine.process_memory_bytes() or actual_size
             models.append(
                 {

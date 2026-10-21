@@ -4549,7 +4549,7 @@ def _splash_status(global_settings) -> dict:
     entries = getattr(engine_pool, "_entries", None) or {}
     for model_id, entry in list(entries.items()):
         engine = getattr(entry, "engine", None)
-        if not isinstance(engine, SplashEngine):
+        if not isinstance(engine, SplashEngine) or engine.engine_id != "splash":
             continue
         stats = engine.get_stats()
         models.append(

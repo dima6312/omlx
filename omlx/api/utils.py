@@ -12,6 +12,8 @@ from .openai_models import Message
 
 # Model families whose chat templates consume message.reasoning_content directly.
 _NATIVE_REASONING_MODEL_TYPES = {
+    # Flint's chat template renders history reasoning_content into <think>.
+    "flint",
     "minimax_m3",
     "minimax_m3_vl",
     # Inkling's chat template renders history reasoning_content back into

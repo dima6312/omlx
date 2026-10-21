@@ -875,8 +875,10 @@ class _StreamState:
         self.finish_reason = choice.get("finish_reason") or self.finish_reason
         delta = choice.get("delta") or {}
         piece = ""
-        if delta.get("reasoning_content"):
-            piece += ("" if self.in_think else "<think>") + delta["reasoning_content"]
+        # Rec streams reasoning as ``reasoning``.
+        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+        if reasoning:
+            piece += ("" if self.in_think else "<think>") + reasoning
             self.in_think = True
         if delta.get("content"):
             piece += ("</think>" if self.in_think else "") + delta["content"]
@@ -1018,6 +1020,7 @@ class SplashOptions:
 class SplashEngine(BaseEngine):
     """Serves one model through a ``splash serve`` child process."""
 
+    engine_id = "splash"
     # Splash budgets its own Metal memory (--max-memory); there is no oMLX
     # scheduler here for the process memory enforcer to update.
     _prefill_memory_guard_managed_externally = True
