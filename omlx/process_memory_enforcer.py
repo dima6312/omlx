@@ -1857,7 +1857,7 @@ class ProcessMemoryEnforcer:
                     await self._engine_pool._unload_pending_if_idle_locked(pending)
                     continue
 
-                victim = self._engine_pool._find_lru_victim()
+                victim = self._engine_pool._find_lru_victim(smallest_first=True)
                 if victim is not None:
                     loaded_non_pinned = [
                         mid

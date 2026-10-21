@@ -2994,12 +2994,15 @@ class EnginePool:
         finally:
             await self.release_engine(model_id)
 
-    def _find_lru_victim(self) -> str | None:
+    def _find_lru_victim(self, smallest_first: bool = False) -> str | None:
         """
         Find the least recently used non-pinned loaded model.
 
         Skips models with active inference requests to avoid interrupting
-        in-flight generation.
+        in-flight generation. With ``smallest_first`` the smallest idle model
+        goes first (LRU breaks ties): memory pressure then sheds helpers that
+        reload in seconds before a big model whose reload re-prefills its
+        whole context.
 
         Returns:
             Model ID of the LRU victim, or None if no evictable model found
@@ -3013,11 +3016,12 @@ class EnginePool:
             if self._entry_has_active_requests(e):
                 logger.debug(f"Skipping victim '{mid}': has active requests")
                 continue
-            candidates.append((e.last_access, mid))
+            size = (e.actual_size or e.estimated_size) if smallest_first else 0
+            candidates.append((size, e.last_access, mid))
         if not candidates:
             return None
-        candidates.sort()  # Sort by last_access (oldest first)
-        return candidates[0][1]
+        candidates.sort()  # Smallest first when asked, then oldest first
+        return candidates[0][2]
 
     @staticmethod
     def _resolve_scheduler_from_engine(engine: object) -> object | None:

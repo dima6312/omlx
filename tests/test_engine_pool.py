@@ -1469,6 +1469,19 @@ class TestEnginePoolLRU:
         victim = pool_with_entries._find_lru_victim()
         assert victim == "model-a"
 
+    def test_find_lru_victim_smallest_first(self, pool_with_entries):
+        """Pressure eviction sheds a small helper before an older big model."""
+        for mid, size, access in (("model-a", 20 * 1024**3, 100), ("model-b", 3 * 1024**3, 200)):
+            engine = MagicMock()
+            engine.has_active_requests.return_value = False
+            entry = pool_with_entries._entries[mid]
+            entry.engine = engine
+            entry.actual_size = size
+            entry.last_access = access
+
+        assert pool_with_entries._find_lru_victim() == "model-a"
+        assert pool_with_entries._find_lru_victim(smallest_first=True) == "model-b"
+
     def test_pinned_model_skipped_for_eviction(self, pool_with_entries):
         """Test that pinned models are skipped during eviction."""
         # model-a is pinned and older

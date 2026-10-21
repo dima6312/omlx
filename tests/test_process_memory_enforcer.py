@@ -418,6 +418,8 @@ class TestCheckAndEnforce:
             )
             await enforcer._check_and_enforce()
         enforcer._engine_pool._unload_engine.assert_called_once_with("model-a")
+        # Pressure sheds the smallest idle model first (helpers reload in seconds).
+        enforcer._engine_pool._find_lru_victim.assert_called_with(smallest_first=True)
 
     @pytest.mark.asyncio
     async def test_stops_when_all_pinned(self, enforcer):
