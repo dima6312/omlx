@@ -7,14 +7,16 @@ import stat
 import sys
 import textwrap
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+import pytest
 
 from omlx.engine import rec as rec_mod
 from omlx.engine import splash as splash_mod
 from omlx.engine.rec import RecEngine, rec_memory_estimate
 from omlx.engine_pool import EngineEntry, EnginePool
+from omlx.exceptions import ModelBusyError
 from omlx.model_settings import ModelSettings
 from omlx.settings import GlobalSettings
 
@@ -55,6 +57,53 @@ def _engine(tmp_path, binary=None) -> RecEngine:
         log_dir=tmp_path / "logs",
         context=None,
     )
+
+
+class TestServeCommand:
+    @pytest.mark.parametrize("sidecar", [False, True])
+    def test_bundled_flint_command_is_unchanged(self, tmp_path, sidecar):
+        engine = _engine(tmp_path)
+        # A sidecar must not change the bundled profile's launch behaviour.
+        if sidecar:
+            (engine._path / "rec-bundle.json").write_text("{}")
+
+        assert engine._serve_command(1234) == [
+            str(tmp_path / "rec"),
+            "serve",
+            "--port",
+            "1234",
+            "--context",
+            "262144",
+        ]
+
+    def test_custom_model_uses_its_own_bundle_through_symlink(self, tmp_path):
+        engine = _engine(tmp_path)
+        export = _write_flint(tmp_path / "export")
+        manifest = export / "rec-bundle.json"
+        manifest.write_text("{}")
+        link = tmp_path / "models" / "flint-abliterated"
+        link.symlink_to(export, target_is_directory=True)
+        engine._path = link
+
+        assert engine._serve_command(1234) == [
+            str(tmp_path / "rec"),
+            "serve",
+            "--port",
+            "1234",
+            "--context",
+            "262144",
+            "--manifest",
+            str(manifest.resolve()),
+        ]
+
+    def test_custom_model_without_bundle_fails_closed(self, tmp_path):
+        engine = _engine(tmp_path)
+        engine._path = _write_flint(tmp_path / "flint-abliterated")
+        # The checkpoint manifest is not a Rec release-bundle descriptor.
+        (engine._path / "flint-abliterated-int4.json").write_text("{}")
+
+        with pytest.raises(ValueError, match="requires its own rec-bundle.json"):
+            engine._serve_command(1234)
 
 
 class TestStreaming:
@@ -165,6 +214,7 @@ class TestLifecycle:
         engine = _engine(tmp_path, binary)
 
         await engine.start()
+        assert engine._process is not None
         group = engine._process.pid
         try:
             assert engine.get_stats()["running"] is True
@@ -190,6 +240,67 @@ class TestEnginePool:
         )
         pool._entries[entry.model_id] = entry
         return pool, entry
+
+    @pytest.mark.parametrize("state", ["idle", "active", "leased", "pinned", "stop_error"])
+    async def test_only_one_rec_process_before_loading_another(
+        self, tmp_path, monkeypatch, state
+    ):
+        global_settings = GlobalSettings(base_path=tmp_path / "omlx")
+        monkeypatch.setattr(
+            "omlx.engine_pool.get_global_settings", lambda: global_settings
+        )
+        pool, original = self._pool(tmp_path)
+        original.engine = _engine(tmp_path)
+        original.engine._tokenizer = MagicMock()
+        original.engine._active = int(state == "active")
+        original.in_use = int(state == "leased")
+        original.is_pinned = state == "pinned"
+        events = []
+
+        async def stop():
+            events.append("stop flint")
+            if state == "stop_error":
+                raise RuntimeError("Rec process did not stop")
+
+        original.engine.stop = AsyncMock(side_effect=stop)
+        old_engine = original.engine
+        model = _write_flint(tmp_path / "models" / "flint-abliterated")
+        custom = EngineEntry(
+            model_id="flint-abliterated",
+            model_path=str(model),
+            model_type="llm",
+            engine_type="batched",
+            estimated_size=1024,
+        )
+        pool._entries[custom.model_id] = custom
+        new_engine = RecEngine(str(model), tmp_path / "rec", tmp_path / "logs", None)
+        new_engine._tokenizer = MagicMock()
+
+        async def load(model_id, **kwargs):
+            events.append("start abliterated")
+            pool._entries[model_id].engine = new_engine
+
+        monkeypatch.setattr(pool, "_load_engine", AsyncMock(side_effect=load))
+        # Plenty of headroom: exclusivity must not depend on memory pressure.
+        monkeypatch.setattr(pool, "_current_ceiling", lambda: 1000 * GIB)
+        monkeypatch.setattr(pool, "_admission_soft_target", lambda: 1000 * GIB)
+        settings = ModelSettings(external_engine="rec")
+
+        if state in ("active", "leased", "pinned"):
+            with pytest.raises(ModelBusyError):
+                await pool.get_engine(custom.model_id, runtime_settings=settings)
+            assert events == []
+            assert original.engine is old_engine
+        elif state == "stop_error":
+            with pytest.raises(RuntimeError, match="Rec process did not stop"):
+                await pool.get_engine(custom.model_id, runtime_settings=settings)
+            assert events == ["stop flint"]
+            assert original.engine is old_engine
+        else:
+            loaded = await pool.get_engine(custom.model_id, runtime_settings=settings)
+            assert loaded is new_engine
+            assert events == ["stop flint", "start abliterated"]
+            assert original.engine is None
 
     def test_rec_setting_builds_a_rec_engine(self, tmp_path, monkeypatch):
         global_settings = GlobalSettings(base_path=tmp_path / "omlx")

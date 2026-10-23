@@ -2737,6 +2737,23 @@ class EnginePool:
             runtime_load_settings = (
                 load_settings if ngram_admission_override else runtime_settings
             )
+            # Rec's launcher is singleton, even when both profiles fit in RAM.
+            # Hold the pool lock through teardown and the following load.
+            if self.external_engine_id(model_id, load_settings) == REC_ENGINE:
+                for other in list(self._entries.values()):
+                    if other.model_id == model_id or not isinstance(
+                        other.engine, RecEngine
+                    ):
+                        continue
+                    if (
+                        other.is_pinned
+                        or other.is_loading
+                        or not self._entry_is_quiescent(other)
+                    ):
+                        raise ModelBusyError(other.model_id, "switch Rec profiles")
+                    await self._unload_engine(other.model_id)
+                    unloaded_for_admission = True
+
             admission_size = self._entry_runtime_resident_size(
                 entry,
                 load_settings,
@@ -3616,14 +3633,15 @@ class EnginePool:
                 **({"local_only": True} if local_only and distributed else {})
             )
         except Exception as e:
-            if distributed:
+            if distributed or isinstance(entry.engine, RecEngine):
+                # Rec must not launch a second profile after failed teardown.
                 # The supervisor raises (DistributedTeardownError) when the
                 # final SIGKILL cannot be verified, so this path is now
                 # reachable: keep the supervisor reachable and the planned
                 # memory accounted so a later unload can retry process
                 # teardown instead of releasing the budget over a live rank.
                 logger.error(
-                    f"Distributed teardown failed for {model_id} ({e}); "
+                    f"Process teardown failed for {model_id} ({e}); "
                     "keeping the engine registered for retry",
                     exc_info=True,
                 )

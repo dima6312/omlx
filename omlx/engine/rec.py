@@ -101,7 +101,7 @@ class RecEngine(SplashEngine):
         )
 
     def _serve_command(self, port: int) -> list[str]:
-        return [
+        command = [
             str(self._binary),
             "serve",
             "--port",
@@ -109,6 +109,13 @@ class RecEngine(SplashEngine):
             "--context",
             str(self._context),
         ]
+        # The bundled profile keeps Rec's default release and launch command.
+        if self._path.name != REC_MODEL:
+            manifest = self._path / "rec-bundle.json"
+            if not manifest.is_file():
+                raise ValueError("Rec model requires its own rec-bundle.json")
+            command.extend(["--manifest", str(manifest.resolve())])
+        return command
 
     def _read_api_key(self) -> str:
         # Rec keeps one key per install and hands it to its server itself.
@@ -129,16 +136,16 @@ class RecEngine(SplashEngine):
             if self._process.poll() is None:
                 return
             raise RuntimeError(self.runtime_failed_reason)
+        port = _free_port()
+        command = self._serve_command(port)
         await asyncio.to_thread(self._load_tokenizer)
         self._api_key = await asyncio.to_thread(self._read_api_key)
-        port = _free_port()
         self._base_url = f"http://127.0.0.1:{port}"
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
             headers={"Authorization": f"Bearer {self._api_key}"},
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
-        command = self._serve_command(port)
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         splash.logger.info(
             "Rec: starting %s (log: %s)", " ".join(command), self._log_path
